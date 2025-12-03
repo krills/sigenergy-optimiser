@@ -1,0 +1,138 @@
+{
+  "winter_weekday_high_consumption": {
+    "description": "Typical Swedish winter weekday with high heating consumption",
+    "season": "winter",
+    "day_type": "weekday",
+    "date": "2024-01-15",
+    "hourly_prices_sek_kwh": [
+      0.45, 0.42, 0.38, 0.35, 0.33, 0.36,
+      0.48, 0.62, 0.78, 0.85, 0.92, 0.98,
+      1.15, 1.22, 1.18, 1.25, 1.35, 1.45,
+      1.65, 1.85, 1.75, 1.45, 0.85, 0.65
+    ],
+    "characteristics": {
+      "peak_hours": [17, 18, 19],
+      "low_hours": [3, 4, 5],
+      "heating_demand": "very_high",
+      "solar_production": "minimal"
+    }
+  },
+  
+  "summer_weekend_low_consumption": {
+    "description": "Swedish summer weekend with vacation periods",
+    "season": "summer",
+    "day_type": "weekend", 
+    "date": "2024-07-20",
+    "hourly_prices_sek_kwh": [
+      0.25, 0.22, 0.18, 0.15, 0.12, 0.15,
+      0.22, 0.28, 0.35, 0.32, 0.28, 0.25,
+      0.22, 0.18, 0.15, 0.18, 0.22, 0.28,
+      0.35, 0.42, 0.38, 0.32, 0.28, 0.25
+    ],
+    "characteristics": {
+      "peak_hours": [19, 20],
+      "low_hours": [4, 14, 15],
+      "heating_demand": "none",
+      "solar_production": "maximum"
+    }
+  },
+  
+  "spring_transition_volatile": {
+    "description": "Spring with volatile prices due to hydroelectric variations",
+    "season": "spring",
+    "day_type": "weekday",
+    "date": "2024-04-10",
+    "hourly_prices_sek_kwh": [
+      0.35, 0.32, 0.28, 0.25, 0.22, 0.25,
+      0.38, 0.55, 0.72, 0.45, 0.35, 0.42,
+      0.68, 0.85, 0.65, 0.52, 0.75, 0.95,
+      1.15, 1.05, 0.85, 0.65, 0.45, 0.38
+    ],
+    "characteristics": {
+      "peak_hours": [18, 19],
+      "low_hours": [4, 5],
+      "heating_demand": "medium",
+      "solar_production": "growing"
+    }
+  },
+  
+  "autumn_industry_peak": {
+    "description": "Autumn with industrial consumption ramping up",
+    "season": "autumn", 
+    "day_type": "weekday",
+    "date": "2024-10-15",
+    "hourly_prices_sek_kwh": [
+      0.38, 0.35, 0.32, 0.28, 0.25, 0.32,
+      0.45, 0.65, 0.85, 0.95, 1.05, 1.15,
+      1.25, 1.18, 1.12, 1.05, 1.25, 1.45,
+      1.65, 1.55, 1.35, 1.05, 0.75, 0.55
+    ],
+    "characteristics": {
+      "peak_hours": [16, 17, 18],
+      "low_hours": [4, 5],
+      "heating_demand": "increasing",
+      "solar_production": "decreasing"
+    }
+  },
+  
+  "extreme_winter_shortage": {
+    "description": "Extreme winter day with nuclear plants offline",
+    "season": "winter",
+    "day_type": "weekday", 
+    "date": "2024-02-05",
+    "hourly_prices_sek_kwh": [
+      1.25, 1.15, 0.95, 0.85, 0.75, 0.95,
+      1.35, 1.85, 2.45, 2.85, 3.25, 3.65,
+      4.15, 4.55, 4.25, 4.85, 5.25, 5.85,
+      6.45, 6.25, 5.65, 4.25, 2.85, 1.95
+    ],
+    "characteristics": {
+      "peak_hours": [16, 17, 18, 19],
+      "low_hours": [4, 5],
+      "heating_demand": "critical",
+      "solar_production": "minimal",
+      "supply_shortage": true
+    }
+  },
+  
+  "negative_price_spring": {
+    "description": "Spring day with hydroelectric surplus causing negative prices", 
+    "season": "spring",
+    "day_type": "weekend",
+    "date": "2024-05-12",
+    "hourly_prices_sek_kwh": [
+      0.05, 0.02, -0.05, -0.12, -0.18, -0.08,
+      0.05, 0.15, 0.25, 0.18, 0.12, 0.08,
+      0.02, -0.02, -0.08, -0.05, 0.02, 0.08,
+      0.15, 0.22, 0.18, 0.12, 0.08, 0.05
+    ],
+    "characteristics": {
+      "peak_hours": [19],
+      "low_hours": [2, 3, 4, 5, 13, 14, 15],
+      "heating_demand": "low",
+      "solar_production": "high",
+      "hydro_surplus": true,
+      "negative_prices": true
+    }
+  },
+  
+  "midsummer_minimal_demand": {
+    "description": "Midsummer with minimal industrial activity",
+    "season": "summer",
+    "day_type": "holiday",
+    "date": "2024-06-21", 
+    "hourly_prices_sek_kwh": [
+      0.15, 0.12, 0.08, 0.05, 0.02, 0.05,
+      0.08, 0.12, 0.15, 0.18, 0.15, 0.12,
+      0.08, 0.05, 0.02, 0.05, 0.08, 0.12,
+      0.18, 0.22, 0.18, 0.15, 0.12, 0.15
+    ],
+    "characteristics": {
+      "peak_hours": [19],
+      "low_hours": [4, 14],
+      "heating_demand": "none",
+      "solar_production": "maximum",
+      "industrial_activity": "minimal"
+    }
+  }
+}
