@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Services\SigenEnergyApiService;
+use App\Services\NordPoolApiService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -11,10 +12,12 @@ use Inertia\Inertia;
 class AdminDashboardController extends Controller
 {
     private SigenEnergyApiService $sigenEnergyApi;
+    private NordPoolApiService $nordPoolApi;
 
-    public function __construct(SigenEnergyApiService $sigenEnergyApi)
+    public function __construct(SigenEnergyApiService $sigenEnergyApi, NordPoolApiService $nordPoolApi)
     {
         $this->sigenEnergyApi = $sigenEnergyApi;
+        $this->nordPoolApi = $nordPoolApi;
     }
 
     /**
@@ -64,6 +67,9 @@ class AdminDashboardController extends Controller
 
         // Get systems and devices data with caching
         $systemsData = $this->getCachedSystemsAndDevices();
+        
+        // Get today's electricity prices
+        $pricesData = $this->getTodaysElectricityPrices();
 
         return Inertia::render('Dashboard', [
             'authenticated' => true,
@@ -73,7 +79,8 @@ class AdminDashboardController extends Controller
             'cacheInfo' => [
                 'nextUpdate' => $systemsData['nextUpdate'] ?? null,
                 'dataAge' => $systemsData['dataAge'] ?? null
-            ]
+            ],
+            'electricityPrices' => $pricesData
         ]);
     }
 
@@ -323,6 +330,78 @@ class AdminDashboardController extends Controller
             return response()->json([
                 'error' => 'Exception occurred: ' . $e->getMessage()
             ], 500);
+        }
+    }
+
+    /**
+     * Get today's electricity prices with caching
+     */
+    private function getTodaysElectricityPrices(): array
+    {
+        $cacheKey = 'nordpool_prices_today_se3';
+        $cacheDuration = 60; // 1 hour cache
+
+        // Check if we have cached data
+        $cachedPrices = Cache::get($cacheKey);
+        if ($cachedPrices) {
+            return $cachedPrices;
+        }
+
+        Log::info('Fetching fresh electricity prices from Nord Pool API');
+
+        try {
+            // Get today's prices for Stockholm (SE3)
+            $prices = $this->nordPoolApi->getTodaysPrices('SE3');
+
+            if (empty($prices)) {
+                Log::warning('No electricity prices available from Nord Pool API');
+                return [
+                    'prices' => [],
+                    'loading' => false,
+                    'error' => 'No price data available',
+                    'lastUpdated' => now()->toISOString()
+                ];
+            }
+
+            // Convert to format expected by PriceChart component
+            $formattedPrices = [];
+            foreach ($prices as $priceData) {
+                $formattedPrices[] = [
+                    'timestamp' => strtotime($priceData['time_start']),
+                    'price' => $priceData['value'] / 1000, // Convert öre to SEK
+                    'hour' => date('H:i', strtotime($priceData['time_start']))
+                ];
+            }
+
+            $dataToCache = [
+                'prices' => $formattedPrices,
+                'loading' => false,
+                'error' => null,
+                'lastUpdated' => now()->toISOString()
+            ];
+
+            // Cache the data for 1 hour
+            Cache::put($cacheKey, $dataToCache, now()->addMinutes($cacheDuration));
+
+            Log::info('Successfully cached electricity prices', [
+                'price_count' => count($formattedPrices),
+                'cache_duration' => $cacheDuration . ' minutes'
+            ]);
+
+            return $dataToCache;
+
+        } catch (\Exception $e) {
+            Log::error('Error fetching electricity prices', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return [
+                'prices' => [],
+                'loading' => false,
+                'error' => 'Failed to fetch price data: ' . $e->getMessage(),
+                'lastUpdated' => now()->toISOString()
+            ];
         }
     }
 }

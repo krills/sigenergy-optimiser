@@ -72,6 +72,16 @@ export interface PageProps {
   systems?: SigenEnergySystem[];
   lastUpdated?: string | null;
   cacheInfo?: CacheInfo | null;
+  electricityPrices?: {
+    prices: Array<{
+      timestamp: number;
+      price: number;
+      hour: string;
+    }>;
+    loading: boolean;
+    error?: string;
+    lastUpdated: string;
+  };
   // Index signature to satisfy Inertia's PageProps constraint
   [key: string]: any;
 }

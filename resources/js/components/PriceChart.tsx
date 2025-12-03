@@ -1,0 +1,249 @@
+import { useEffect, useRef } from 'react';
+import Highcharts from 'highcharts';
+import HighchartsReact from 'highcharts-react-official';
+
+interface PriceData {
+  timestamp: number; // Unix timestamp
+  price: number; // SEK/kWh
+  hour: string; // Human readable hour
+}
+
+interface PriceChartProps {
+  prices: PriceData[];
+  loading?: boolean;
+  error?: string;
+}
+
+export default function PriceChart({ prices, loading = false, error }: PriceChartProps) {
+  const chartRef = useRef<HighchartsReact.RefObject>(null);
+
+  const chartOptions: Highcharts.Options = {
+    title: {
+      text: 'Stockholm Electricity Prices (SE3)',
+      style: {
+        fontSize: '16px',
+        fontWeight: '600',
+        color: '#1f2937'
+      }
+    },
+    
+    subtitle: {
+      text: 'Nord Pool hourly prices - Today',
+      style: {
+        fontSize: '12px',
+        color: '#6b7280'
+      }
+    },
+
+    chart: {
+      type: 'line',
+      height: 300,
+      backgroundColor: 'transparent',
+      spacing: [10, 10, 15, 10]
+    },
+
+    xAxis: {
+      type: 'datetime',
+      title: {
+        text: 'Time',
+        style: { color: '#6b7280', fontSize: '12px' }
+      },
+      labels: {
+        format: '{value:%H:%M}',
+        style: { color: '#6b7280', fontSize: '11px' }
+      },
+      gridLineColor: '#e5e7eb'
+    },
+
+    yAxis: {
+      title: {
+        text: 'Price (SEK/kWh)',
+        style: { color: '#6b7280', fontSize: '12px' }
+      },
+      labels: {
+        format: '{value:.3f}',
+        style: { color: '#6b7280', fontSize: '11px' }
+      },
+      gridLineColor: '#e5e7eb',
+      plotBands: [
+        {
+          from: 0,
+          to: 0.15,
+          color: 'rgba(34, 197, 94, 0.1)',
+          label: {
+            text: 'Cheap',
+            style: { color: '#22c55e', fontSize: '10px' }
+          }
+        },
+        {
+          from: 1.5,
+          to: 10,
+          color: 'rgba(239, 68, 68, 0.1)', 
+          label: {
+            text: 'Expensive',
+            style: { color: '#ef4444', fontSize: '10px' }
+          }
+        }
+      ]
+    },
+
+    tooltip: {
+      shared: true,
+      formatter: function() {
+        const point = this.points?.[0];
+        if (!point) return '';
+        
+        return `
+          <b>${Highcharts.dateFormat('%H:%M', point.x)}</b><br/>
+          Price: <b>${point.y?.toFixed(3)} SEK/kWh</b><br/>
+          <span style="color: ${point.y! < 0.15 ? '#22c55e' : point.y! > 1.5 ? '#ef4444' : '#f59e0b'}">
+            ${point.y! < 0.15 ? '🟢 Cheap - Good for charging' : 
+              point.y! > 1.5 ? '🔴 Expensive - Use battery' : 
+              '🟡 Medium price'}
+          </span>
+        `;
+      },
+      backgroundColor: 'rgba(255, 255, 255, 0.95)',
+      borderColor: '#e5e7eb',
+      borderRadius: 8,
+      shadow: true
+    },
+
+    legend: {
+      enabled: false
+    },
+
+    plotOptions: {
+      line: {
+        lineWidth: 2,
+        marker: {
+          enabled: true,
+          radius: 3,
+          symbol: 'circle'
+        },
+        states: {
+          hover: {
+            lineWidth: 3
+          }
+        }
+      }
+    },
+
+    series: [{
+      type: 'line',
+      name: 'Electricity Price',
+      data: prices.map(price => [
+        price.timestamp * 1000, // Convert to milliseconds for Highcharts
+        price.price
+      ]),
+      color: '#3b82f6',
+      zones: [
+        {
+          value: 0.15,
+          color: '#22c55e' // Green for cheap prices
+        },
+        {
+          value: 1.5, 
+          color: '#f59e0b' // Orange for medium prices
+        },
+        {
+          color: '#ef4444' // Red for expensive prices
+        }
+      ]
+    }],
+
+    credits: {
+      enabled: false
+    },
+
+    responsive: {
+      rules: [{
+        condition: {
+          maxWidth: 768
+        },
+        chartOptions: {
+          chart: {
+            height: 250
+          },
+          title: {
+            style: { fontSize: '14px' }
+          },
+          subtitle: {
+            style: { fontSize: '11px' }
+          }
+        }
+      }]
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="animate-pulse">
+          <div className="h-4 bg-gray-200 rounded w-1/3 mb-2"></div>
+          <div className="h-3 bg-gray-200 rounded w-1/4 mb-4"></div>
+          <div className="h-64 bg-gray-200 rounded"></div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="bg-white rounded-lg border border-red-200 p-6">
+        <div className="flex items-center text-red-600">
+          <svg className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+          </svg>
+          <div>
+            <h3 className="font-medium">Price Data Error</h3>
+            <p className="text-sm text-red-500">{error}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (prices.length === 0) {
+    return (
+      <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="text-center text-gray-500">
+          <h3 className="font-medium text-gray-900 mb-2">No Price Data Available</h3>
+          <p className="text-sm">Waiting for Nord Pool electricity price data...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+      <HighchartsReact
+        ref={chartRef}
+        highcharts={Highcharts}
+        options={chartOptions}
+      />
+      
+      {/* Price Summary */}
+      <div className="mt-4 grid grid-cols-3 gap-4 text-sm">
+        <div className="text-center">
+          <div className="font-medium text-green-600">
+            {Math.min(...prices.map(p => p.price)).toFixed(3)} SEK
+          </div>
+          <div className="text-gray-500">Min Today</div>
+        </div>
+        <div className="text-center">
+          <div className="font-medium text-blue-600">
+            {(prices.reduce((sum, p) => sum + p.price, 0) / prices.length).toFixed(3)} SEK
+          </div>
+          <div className="text-gray-500">Average</div>
+        </div>
+        <div className="text-center">
+          <div className="font-medium text-red-600">
+            {Math.max(...prices.map(p => p.price)).toFixed(3)} SEK
+          </div>
+          <div className="text-gray-500">Max Today</div>
+        </div>
+      </div>
+    </div>
+  );
+}

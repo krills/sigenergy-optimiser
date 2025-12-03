@@ -2,13 +2,14 @@ import { useState, useEffect } from 'react';
 import { Head, usePage, router } from '@inertiajs/react';
 import type { PageProps, SigenEnergySystem, EnergyFlowData, ApiResponse } from '@/types/sigenergy';
 import { formatNumber, formatDateTime, getStatusClassName } from '@/utils/formatters';
+import PriceChart from '@/components/PriceChart';
 
 interface RealtimeDataState {
   [systemId: string]: EnergyFlowData;
 }
 
 function Dashboard() {
-    const { authenticated, authError, systems, lastUpdated, cacheInfo } = usePage<PageProps>().props;
+    const { authenticated, authError, systems, lastUpdated, cacheInfo, electricityPrices } = usePage<PageProps>().props;
     const [realtimeData, setRealtimeData] = useState<RealtimeDataState>({});
     const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
@@ -145,6 +146,17 @@ function Dashboard() {
                 <main>
                     <div className="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8">
                         <div className="px-4 py-6 sm:px-0">
+                            
+                            {/* Electricity Price Chart */}
+                            {electricityPrices && (
+                                <div className="mb-8">
+                                    <PriceChart 
+                                        prices={electricityPrices.prices || []}
+                                        loading={electricityPrices.loading}
+                                        error={electricityPrices.error}
+                                    />
+                                </div>
+                            )}
                             
                             {/* Cache Info */}
                             {cacheInfo && (
