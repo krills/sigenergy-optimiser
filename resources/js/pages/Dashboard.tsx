@@ -9,7 +9,7 @@ interface RealtimeDataState {
 }
 
 function Dashboard() {
-    const { authenticated, authError, systems, lastUpdated, cacheInfo, electricityPrices } = usePage<PageProps>().props;
+    const { authenticated, authError, systems, lastUpdated, cacheInfo, electricityPrices, batterySchedule } = usePage<PageProps>().props;
     const [realtimeData, setRealtimeData] = useState<RealtimeDataState>({});
     const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
@@ -152,9 +152,79 @@ function Dashboard() {
                                 <div className="mb-8">
                                     <PriceChart 
                                         prices={electricityPrices.prices || []}
+                                        chargeIntervals={batterySchedule?.chargeIntervals || []}
                                         loading={electricityPrices.loading}
                                         error={electricityPrices.error}
+                                        provider={electricityPrices.provider}
                                     />
+                                </div>
+                            )}
+
+                            {/* Battery Optimization Schedule */}
+                            {batterySchedule && !batterySchedule.error && (
+                                <div className="mb-8 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-6">
+                                    <h3 className="text-lg font-semibold text-blue-900 mb-4">🔋 Battery Optimization Schedule</h3>
+                                    
+                                    {batterySchedule.summary && (
+                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                                            <div className="bg-white rounded-lg p-3 text-center shadow-sm">
+                                                <div className="text-lg font-bold text-green-600">
+                                                    {batterySchedule.summary.charge_intervals}
+                                                </div>
+                                                <div className="text-sm text-gray-600">Charge Intervals</div>
+                                                <div className="text-xs text-gray-500">
+                                                    {batterySchedule.summary.charge_hours.toFixed(1)}h total
+                                                </div>
+                                            </div>
+                                            <div className="bg-white rounded-lg p-3 text-center shadow-sm">
+                                                <div className="text-lg font-bold text-orange-600">
+                                                    {batterySchedule.summary.discharge_intervals}
+                                                </div>
+                                                <div className="text-sm text-gray-600">Discharge Intervals</div>
+                                                <div className="text-xs text-gray-500">
+                                                    {batterySchedule.summary.discharge_hours.toFixed(1)}h total
+                                                </div>
+                                            </div>
+                                            <div className="bg-white rounded-lg p-3 text-center shadow-sm">
+                                                <div className="text-lg font-bold text-blue-600">
+                                                    {batterySchedule.current_soc?.toFixed(0) || 'N/A'}%
+                                                </div>
+                                                <div className="text-sm text-gray-600">Current SOC</div>
+                                                <div className="text-xs text-gray-500">Battery level</div>
+                                            </div>
+                                            <div className="bg-white rounded-lg p-3 text-center shadow-sm">
+                                                <div className={`text-lg font-bold ${batterySchedule.summary.net_benefit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                                    {batterySchedule.summary.net_benefit >= 0 ? '+' : ''}{batterySchedule.summary.net_benefit.toFixed(2)} SEK
+                                                </div>
+                                                <div className="text-sm text-gray-600">Est. Daily Benefit</div>
+                                                <div className="text-xs text-gray-500">
+                                                    {(batterySchedule.summary.efficiency_utilized * 100).toFixed(0)}% efficiency
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {batterySchedule.analysis && (
+                                        <div className="text-sm text-blue-800">
+                                            <p><strong>Price Analysis:</strong> {batterySchedule.analysis.charge_opportunities} charge opportunities, {batterySchedule.analysis.discharge_opportunities} discharge opportunities</p>
+                                            <p><strong>Generated:</strong> {batterySchedule.generated_at ? new Date(batterySchedule.generated_at).toLocaleTimeString() : 'Unknown'}</p>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Battery Schedule Error */}
+                            {batterySchedule?.error && (
+                                <div className="mb-8 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                                    <div className="flex items-center text-yellow-700">
+                                        <svg className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <div>
+                                            <h3 className="font-medium">Battery Schedule Unavailable</h3>
+                                            <p className="text-sm text-yellow-600">{batterySchedule.error}</p>
+                                        </div>
+                                    </div>
                                 </div>
                             )}
                             

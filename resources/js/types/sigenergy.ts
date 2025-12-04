@@ -65,6 +65,47 @@ export interface ApiResponse<T = any> {
   timestamp?: string;
 }
 
+export interface ChargeInterval {
+  timestamp: number; // Unix timestamp in milliseconds
+  power: number; // Charging power in kW
+  reason: string; // Reason for charging
+  price: number; // Price at this interval
+}
+
+export interface BatterySchedule {
+  schedule?: Array<{
+    action: string;
+    start_time: any;
+    end_time: any;
+    power: number;
+    reason: string;
+    price: number;
+    target_soc: number;
+  }>;
+  chargeIntervals: ChargeInterval[];
+  analysis?: {
+    stats: any;
+    charge_opportunities: number;
+    discharge_opportunities: number;
+    price_volatility: number;
+  };
+  summary?: {
+    total_intervals: number;
+    charge_intervals: number;
+    discharge_intervals: number;
+    idle_intervals: number;
+    charge_hours: number;
+    discharge_hours: number;
+    estimated_savings: number;
+    estimated_earnings: number;
+    net_benefit: number;
+    efficiency_utilized: number;
+  };
+  generated_at?: string;
+  current_soc?: number;
+  error?: string | null;
+}
+
 // Inertia.js Page Props Interface
 export interface PageProps {
   authenticated: boolean;
@@ -81,7 +122,14 @@ export interface PageProps {
     loading: boolean;
     error?: string;
     lastUpdated: string;
+    provider?: {
+      name: string;
+      description: string;
+      area: string;
+      granularity: string;
+    };
   };
+  batterySchedule?: BatterySchedule;
   // Index signature to satisfy Inertia's PageProps constraint
   [key: string]: any;
 }

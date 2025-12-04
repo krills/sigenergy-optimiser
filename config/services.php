@@ -42,9 +42,24 @@ return [
     ],
 
     'nordpool' => [
-        'base_url' => env('NORDPOOL_BASE_URL', 'https://mgrey.se/espot'),
-        'provider' => 'mgrey.se',
-        'description' => 'Swedish Electricity Spot Prices via mgrey.se public API',
+        'base_url' => env('NORDPOOL_BASE_URL', 'https://www.nordpoolgroup.com'),
+        'provider' => 'Nord Pool Group',
+        'description' => 'Official Nord Pool electricity market data API',
+        'default_area' => env('NORDPOOL_DEFAULT_AREA', 'SE3'), // SE3 = Stockholm
+        'default_currency' => env('NORDPOOL_DEFAULT_CURRENCY', 'SEK'),
+    ],
+
+    'elprisetjustnu' => [
+        'base_url' => env('ELPRISETJUSTNU_BASE_URL', 'https://www.elprisetjustnu.se/api/v1/prices'),
+        'provider' => 'elprisetjustnu.se',
+        'description' => 'Swedish Electricity Spot Prices with 15-minute granularity',
+        'default_area' => env('ELECTRICITY_PRICE_AREA', 'SE3'),
+        'areas' => [
+            'SE1' => 'Luleå (North Sweden)',
+            'SE2' => 'Sundsvall (Central Sweden)',
+            'SE3' => 'Stockholm (Central Sweden)',
+            'SE4' => 'Malmö (South Sweden)'
+        ],
     ],
 
 ];

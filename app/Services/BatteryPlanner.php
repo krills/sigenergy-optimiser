@@ -8,93 +8,95 @@ use Illuminate\Support\Facades\Log;
 class BatteryPlanner
 {
     // Configuration constants
-    private const MIN_SOC = 20; // Never discharge below 20%
+    private const MIN_SOC = 10; // Never discharge below 20%
     private const MAX_SOC = 95; // Never charge above 95%
     private const BATTERY_CAPACITY = 8.0; // kWh (8kWh system)
-    private const MAX_CHARGE_POWER = 3.0; // kW
-    private const MAX_DISCHARGE_POWER = 3.0; // kW
+    private const MAX_CHARGE_POWER = 3.0; // kW (per 15-minute interval: 0.75 kWh)
+    private const MAX_DISCHARGE_POWER = 3.0; // kW (per 15-minute interval: 0.75 kWh)
     private const ROUND_TRIP_EFFICIENCY = 0.93; // 93% efficiency
-    
-    // Price thresholds (SEK/kWh)
-    private const VERY_CHEAP_THRESHOLD = 0.10;
-    private const CHEAP_THRESHOLD = 0.30;
-    private const EXPENSIVE_THRESHOLD = 0.70;
-    private const VERY_EXPENSIVE_THRESHOLD = 1.20;
-    
+
+    // 15-minute interval constants
+    private const INTERVAL_DURATION = 15; // minutes
+    private const INTERVALS_PER_HOUR = 4;
+    private const INTERVALS_PER_DAY = 96;
+    private const ENERGY_PER_INTERVAL = 0.75; // kWh (3kW * 0.25 hours)
+
     // Planning parameters
-    private const PLANNING_HORIZON_HOURS = 48; // Plan for next 48 hours
-    private const MIN_SESSION_DURATION = 1; // Minimum 1 hour sessions
+    private const PLANNING_HORIZON_INTERVALS = 192; // 48 hours (2 days)
+    private const MIN_SESSION_INTERVALS = 4; // Minimum 1 hour sessions (4 x 15min)
     private const MAX_DAILY_CYCLES = 2; // Maximum 2 charge/discharge cycles per day
 
     /**
-     * Generate a complete charge/discharge schedule for the planning horizon
+     * Generate a complete charge/discharge schedule for 15-minute intervals
      */
-    public function generateSchedule(array $hourlyPrices, float $currentSOC, Carbon $startTime = null): array
+    public function generateSchedule(array $intervalPrices, float $currentSOC, Carbon $startTime = null): array
     {
         $startTime = $startTime ?? now();
-        
-        Log::info('BatteryPlanner: Generating schedule', [
+
+        Log::info('BatteryPlanner: Generating 15-minute schedule', [
             'current_soc' => $currentSOC,
-            'price_points' => count($hourlyPrices),
+            'price_intervals' => count($intervalPrices),
             'start_time' => $startTime->format('Y-m-d H:i:s')
         ]);
-        
+
         // Validate inputs
-        $this->validateInputs($hourlyPrices, $currentSOC);
-        
-        // Analyze price patterns
-        $priceAnalysis = $this->analyzePricePatterns($hourlyPrices);
-        
-        // Generate schedule
-        $schedule = $this->createOptimalSchedule($hourlyPrices, $currentSOC, $priceAnalysis, $startTime);
-        
+        $this->validateInputs($intervalPrices, $currentSOC);
+
+        // Analyze price patterns with 15-minute granularity
+        $priceAnalysis = $this->analyzePricePatterns($intervalPrices);
+
+        // Generate optimized schedule for each 15-minute interval
+        $schedule = $this->createOptimal15MinuteSchedule($intervalPrices, $currentSOC, $priceAnalysis, $startTime);
+
         // Validate and optimize schedule
         $optimizedSchedule = $this->optimizeSchedule($schedule, $currentSOC);
-        
-        Log::info('BatteryPlanner: Schedule generated', [
-            'total_actions' => count($optimizedSchedule),
-            'charge_sessions' => count(array_filter($optimizedSchedule, fn($s) => $s['action'] === 'charge')),
-            'discharge_sessions' => count(array_filter($optimizedSchedule, fn($s) => $s['action'] === 'discharge'))
+
+        Log::info('BatteryPlanner: 15-minute schedule generated', [
+            'total_intervals' => count($optimizedSchedule),
+            'charge_intervals' => count(array_filter($optimizedSchedule, fn($s) => $s['action'] === 'charge')),
+            'discharge_intervals' => count(array_filter($optimizedSchedule, fn($s) => $s['action'] === 'discharge')),
+            'idle_intervals' => count(array_filter($optimizedSchedule, fn($s) => $s['action'] === 'idle'))
         ]);
-        
+
         return [
             'schedule' => $optimizedSchedule,
             'analysis' => $priceAnalysis,
             'summary' => $this->generateScheduleSummary($optimizedSchedule, $currentSOC),
             'generated_at' => now(),
-            'valid_until' => $startTime->copy()->addHours(self::PLANNING_HORIZON_HOURS)
+            'valid_until' => $startTime->copy()->addMinutes(self::PLANNING_HORIZON_INTERVALS * self::INTERVAL_DURATION)
         ];
     }
 
     /**
-     * Make immediate decision for current quarter-hour based on current conditions
+     * Make immediate decision for current 15-minute interval
      */
     public function makeImmediateDecision(
-        array $hourlyPrices, 
-        float $currentSOC, 
+        array $intervalPrices,
+        float $currentSOC,
         float $currentSolarPower = 0,
         float $currentLoadPower = 0
     ): array {
-        
+
         $now = now();
-        $currentHour = $now->hour;
-        $currentPrice = $hourlyPrices[$currentHour] ?? 0.50;
-        
-        Log::info('BatteryPlanner: Making immediate decision', [
+        $currentInterval = $this->timeToInterval($now);
+        $currentPrice = $intervalPrices[$currentInterval]['value'] ?? 0.50;
+
+        Log::info('BatteryPlanner: Making immediate 15-minute decision', [
             'current_soc' => $currentSOC,
             'current_price' => $currentPrice,
             'solar_power' => $currentSolarPower,
             'load_power' => $currentLoadPower,
-            'hour' => $currentHour
+            'interval' => $currentInterval,
+            'time' => $now->format('Y-m-d H:i:s')
         ]);
-        
-        // Get next few hours for context
-        $nextHours = array_slice($hourlyPrices, $currentHour, 6);
-        $priceContext = $this->analyzePriceContext($currentPrice, $nextHours, $hourlyPrices);
-        
+
+        // Get next few intervals for context
+        $nextIntervals = array_slice($intervalPrices, $currentInterval, 16); // Next 4 hours
+        $priceContext = $this->analyzePriceContext($currentPrice, $nextIntervals, $intervalPrices);
+
         // Calculate net load (positive = need power, negative = excess power)
         $netLoad = $currentLoadPower - $currentSolarPower;
-        
+
         // Make decision based on multiple factors
         $decision = $this->calculateImmediateAction(
             $currentSOC,
@@ -102,202 +104,253 @@ class BatteryPlanner
             $netLoad,
             $priceContext
         );
-        
+
         Log::info('BatteryPlanner: Immediate decision made', [
             'action' => $decision['action'],
             'power' => $decision['power'],
             'duration' => $decision['duration'],
             'reason' => $decision['reason']
         ]);
-        
+
         return $decision;
     }
 
     /**
-     * Analyze price patterns to identify optimal charge/discharge windows
+     * Analyze price patterns to identify optimal 15-minute charge/discharge windows
      */
-    private function analyzePricePatterns(array $hourlyPrices): array
+    private function analyzePricePatterns(array $intervalPrices): array
     {
-        $prices = array_slice($hourlyPrices, 0, self::PLANNING_HORIZON_HOURS);
-        
+        $intervals = array_slice($intervalPrices, 0, min(count($intervalPrices), self::PLANNING_HORIZON_INTERVALS));
+        $prices = array_column($intervals, 'value');
+
         $stats = [
             'min' => min($prices),
             'max' => max($prices),
             'avg' => array_sum($prices) / count($prices),
-            'median' => $this->calculateMedian($prices)
+            'median' => $this->calculateMedian($prices),
+            'std_dev' => $this->calculateStandardDeviation($prices)
         ];
-        
-        // Identify price windows
+
+        // Identify charge and discharge windows based on price vs daily average
         $chargeWindows = [];
         $dischargeWindows = [];
-        
-        // Dynamic thresholds based on price distribution
-        $lowThreshold = $stats['min'] + ($stats['avg'] - $stats['min']) * 0.3;
-        $highThreshold = $stats['max'] - ($stats['max'] - $stats['avg']) * 0.3;
-        
-        for ($hour = 0; $hour < count($prices); $hour++) {
-            $price = $prices[$hour];
-            $timestamp = now()->addHours($hour);
-            
-            // Identify charging windows (low prices)
-            if ($price <= $lowThreshold || $price <= self::CHEAP_THRESHOLD) {
+
+        foreach ($intervals as $index => $interval) {
+            $price = $interval['value'];
+            $timestamp = Carbon::parse($interval['time_start']);
+
+            // Key algorithm: Compare each 15-minute price to daily average
+            if ($price < $stats['avg']) {
                 $chargeWindows[] = [
-                    'hour' => $hour,
+                    'interval' => $index,
                     'price' => $price,
-                    'timestamp' => $timestamp,
-                    'savings' => $stats['avg'] - $price,
+                    'start_time' => $timestamp,
+                    'end_time' => $timestamp->copy()->addMinutes(15),
+                    'savings' => $stats['avg'] - $price, // How much cheaper than average
                     'priority' => $this->calculatePriority($price, $stats, 'charge')
                 ];
             }
-            
-            // Identify discharging windows (high prices)
-            if ($price >= $highThreshold || $price >= self::EXPENSIVE_THRESHOLD) {
+
+            // Discharge when price is above average (can earn money)
+            if ($price > $stats['avg']) {
                 $dischargeWindows[] = [
-                    'hour' => $hour,
+                    'interval' => $index,
                     'price' => $price,
-                    'timestamp' => $timestamp,
-                    'earnings' => $price - $stats['avg'],
+                    'start_time' => $timestamp,
+                    'end_time' => $timestamp->copy()->addMinutes(15),
+                    'earnings' => $price - $stats['avg'], // How much more expensive than average
                     'priority' => $this->calculatePriority($price, $stats, 'discharge')
                 ];
             }
         }
-        
-        // Sort by priority
-        usort($chargeWindows, fn($a, $b) => $b['priority'] <=> $a['priority']);
-        usort($dischargeWindows, fn($a, $b) => $b['priority'] <=> $a['priority']);
-        
+
+        // Sort by priority (highest savings/earnings first)
+        usort($chargeWindows, fn($a, $b) => $b['savings'] <=> $a['savings']);
+        usort($dischargeWindows, fn($a, $b) => $b['earnings'] <=> $a['earnings']);
+
         return [
             'stats' => $stats,
-            'thresholds' => [
-                'low' => $lowThreshold,
-                'high' => $highThreshold
-            ],
             'charge_windows' => $chargeWindows,
             'discharge_windows' => $dischargeWindows,
+            'total_intervals' => count($intervals),
+            'charge_opportunities' => count($chargeWindows),
+            'discharge_opportunities' => count($dischargeWindows),
             'price_volatility' => $this->calculateVolatility($prices)
         ];
     }
 
     /**
-     * Create optimal schedule based on price analysis
+     * Create optimal schedule for 15-minute intervals based on price analysis
      */
-    private function createOptimalSchedule(
-        array $hourlyPrices, 
-        float $currentSOC, 
-        array $priceAnalysis, 
+    private function createOptimal15MinuteSchedule(
+        array $intervalPrices,
+        float $currentSOC,
+        array $priceAnalysis,
         Carbon $startTime
     ): array {
         $schedule = [];
         $simulatedSOC = $currentSOC;
-        
-        // Select top charge and discharge windows
-        $topChargeWindows = array_slice($priceAnalysis['charge_windows'], 0, 4);
-        $topDischargeWindows = array_slice($priceAnalysis['discharge_windows'], 0, 4);
-        
-        // Create charging sessions
-        foreach ($topChargeWindows as $window) {
-            if ($simulatedSOC >= self::MAX_SOC) break;
-            
-            $session = $this->createChargeSession($window, $simulatedSOC, $startTime);
-            if ($session) {
-                $schedule[] = $session;
-                $simulatedSOC = min(self::MAX_SOC, $simulatedSOC + $session['energy_change']);
-            }
+
+        // Create schedule for each 15-minute interval
+        $totalIntervals = min(count($intervalPrices), self::PLANNING_HORIZON_INTERVALS);
+
+        for ($i = 0; $i < $totalIntervals; $i++) {
+            $interval = $intervalPrices[$i];
+            $price = $interval['value'];
+            $timestamp = Carbon::parse($interval['time_start']);
+
+            // Determine action based on price analysis and current SOC
+            $action = $this->determineIntervalAction($price, $simulatedSOC, $priceAnalysis, $i);
+
+            $scheduleEntry = [
+                'interval' => $i,
+                'action' => $action,
+                'start_time' => $timestamp,
+                'end_time' => $timestamp->copy()->addMinutes(15),
+                'price' => $price,
+                'power' => $this->calculateIntervalPower($action),
+                'energy_change' => $this->calculateEnergyChange($action),
+                'target_soc' => $this->calculateTargetSOC($simulatedSOC, $action),
+                'reason' => $this->getActionReason($action, $price, $priceAnalysis['stats']['avg'])
+            ];
+
+            $schedule[] = $scheduleEntry;
+
+            // Update simulated SOC for next interval
+            $simulatedSOC = $scheduleEntry['target_soc'];
         }
-        
-        // Create discharging sessions
-        foreach ($topDischargeWindows as $window) {
-            if ($simulatedSOC <= self::MIN_SOC) break;
-            
-            $session = $this->createDischargeSession($window, $simulatedSOC, $startTime);
-            if ($session) {
-                $schedule[] = $session;
-                $simulatedSOC = max(self::MIN_SOC, $simulatedSOC - $session['energy_change']);
-            }
-        }
-        
-        // Sort by start time
-        usort($schedule, fn($a, $b) => $a['start_time']->timestamp <=> $b['start_time']->timestamp);
-        
+
         return $schedule;
     }
 
     /**
-     * Create a charging session
+     * Determine action for a specific 15-minute interval
      */
-    private function createChargeSession(array $window, float $currentSOC, Carbon $startTime): ?array
+    private function determineIntervalAction(float $price, float $currentSOC, array $priceAnalysis, int $intervalIndex): string
     {
-        if ($currentSOC >= self::MAX_SOC * 0.9) return null;
-        
-        $availableCapacity = (self::MAX_SOC - $currentSOC) * self::BATTERY_CAPACITY / 100;
-        $maxEnergyThisSession = min($availableCapacity, self::MAX_CHARGE_POWER * 2); // Max 2 hours
-        
-        $duration = min(
-            ceil($maxEnergyThisSession / self::MAX_CHARGE_POWER),
-            self::MIN_SESSION_DURATION * 2
-        );
-        
-        $actualEnergy = min($maxEnergyThisSession, self::MAX_CHARGE_POWER * $duration);
-        $socChange = ($actualEnergy / self::BATTERY_CAPACITY) * 100;
-        
-        return [
-            'action' => 'charge',
-            'start_time' => $startTime->copy()->addHours($window['hour']),
-            'duration' => $duration, // hours
-            'power' => self::MAX_CHARGE_POWER,
-            'energy_change' => $socChange,
-            'target_soc' => min(self::MAX_SOC, $currentSOC + $socChange),
-            'price' => $window['price'],
-            'priority' => $window['priority'],
-            'savings_estimate' => $window['savings'] * $actualEnergy,
-            'reason' => sprintf('Low price: %.3f SEK/kWh (save %.2f SEK)', 
-                             $window['price'], $window['savings'] * $actualEnergy)
-        ];
+        $averagePrice = $priceAnalysis['stats']['avg'];
+
+        // Safety checks first
+        if ($currentSOC <= self::MIN_SOC) {
+            return 'charge'; // Emergency charge
+        }
+
+        if ($currentSOC >= self::MAX_SOC) {
+            return 'idle'; // Cannot charge more
+        }
+
+        // Core algorithm: Compare price to daily average
+        if ($price < $averagePrice) {
+            // Price is cheaper than average - good time to charge
+            if ($currentSOC < 85) { // Only charge if there's room
+                return 'charge';
+            }
+        }
+
+        if ($price > $averagePrice) {
+            // Price is more expensive than average - good time to discharge
+            if ($currentSOC > 30) { // Only discharge if we have energy
+                return 'discharge';
+            }
+        }
+
+        // Price is close to average or SOC limits prevent action
+        return 'idle';
     }
 
     /**
-     * Create a discharging session
+     * Calculate power for a given action in 15-minute interval
      */
-    private function createDischargeSession(array $window, float $currentSOC, Carbon $startTime): ?array
+    private function calculateIntervalPower(string $action): float
     {
-        if ($currentSOC <= self::MIN_SOC * 1.1) return null;
-        
-        $availableCapacity = ($currentSOC - self::MIN_SOC) * self::BATTERY_CAPACITY / 100;
-        $maxEnergyThisSession = min($availableCapacity, self::MAX_DISCHARGE_POWER * 2);
-        
-        $duration = min(
-            ceil($maxEnergyThisSession / self::MAX_DISCHARGE_POWER),
-            self::MIN_SESSION_DURATION * 2
-        );
-        
-        $actualEnergy = min($maxEnergyThisSession, self::MAX_DISCHARGE_POWER * $duration);
-        $socChange = ($actualEnergy / self::BATTERY_CAPACITY) * 100;
-        
-        return [
-            'action' => 'discharge',
-            'start_time' => $startTime->copy()->addHours($window['hour']),
-            'duration' => $duration,
-            'power' => self::MAX_DISCHARGE_POWER,
-            'energy_change' => $socChange,
-            'target_soc' => max(self::MIN_SOC, $currentSOC - $socChange),
-            'price' => $window['price'],
-            'priority' => $window['priority'],
-            'earnings_estimate' => $window['earnings'] * $actualEnergy * self::ROUND_TRIP_EFFICIENCY,
-            'reason' => sprintf('High price: %.3f SEK/kWh (earn %.2f SEK)', 
-                              $window['price'], $window['earnings'] * $actualEnergy)
-        ];
+        switch ($action) {
+            case 'charge':
+                return self::MAX_CHARGE_POWER;
+            case 'discharge':
+                return self::MAX_DISCHARGE_POWER;
+            case 'idle':
+            default:
+                return 0.0;
+        }
+    }
+
+    /**
+     * Calculate energy change for a 15-minute interval action
+     */
+    private function calculateEnergyChange(string $action): float
+    {
+        switch ($action) {
+            case 'charge':
+                return self::ENERGY_PER_INTERVAL; // 0.75 kWh per 15 minutes at 3kW
+            case 'discharge':
+                return self::ENERGY_PER_INTERVAL; // 0.75 kWh per 15 minutes at 3kW
+            case 'idle':
+            default:
+                return 0.0;
+        }
+    }
+
+    /**
+     * Calculate target SOC after interval action
+     */
+    private function calculateTargetSOC(float $currentSOC, string $action): float
+    {
+        $energyChange = $this->calculateEnergyChange($action);
+        $socChange = ($energyChange / self::BATTERY_CAPACITY) * 100;
+
+        switch ($action) {
+            case 'charge':
+                return min(self::MAX_SOC, $currentSOC + ($socChange * self::ROUND_TRIP_EFFICIENCY));
+            case 'discharge':
+                return max(self::MIN_SOC, $currentSOC - $socChange);
+            case 'idle':
+            default:
+                return $currentSOC;
+        }
+    }
+
+    /**
+     * Get human-readable reason for action
+     */
+    private function getActionReason(string $action, float $price, float $averagePrice): string
+    {
+        $priceDiff = abs($price - $averagePrice);
+        $percentage = ($priceDiff / $averagePrice) * 100;
+
+        switch ($action) {
+            case 'charge':
+                return sprintf('Cheap price: %.3f SEK/kWh (%.1f%% below average %.3f)',
+                              $price, $percentage, $averagePrice);
+            case 'discharge':
+                return sprintf('Expensive price: %.3f SEK/kWh (%.1f%% above average %.3f)',
+                              $price, $percentage, $averagePrice);
+            case 'idle':
+            default:
+                return sprintf('Price close to average: %.3f SEK/kWh (average %.3f)',
+                              $price, $averagePrice);
+        }
+    }
+
+    /**
+     * Convert time to 15-minute interval index
+     */
+    private function timeToInterval(Carbon $time): int
+    {
+        $startOfDay = $time->copy()->startOfDay();
+        $minutesSinceStart = $time->diffInMinutes($startOfDay);
+        return intval($minutesSinceStart / self::INTERVAL_DURATION);
     }
 
     /**
      * Calculate immediate action for quarter-hour execution
      */
     private function calculateImmediateAction(
-        float $currentSOC, 
-        float $currentPrice, 
+        float $currentSOC,
+        float $currentPrice,
         float $netLoad,
         array $priceContext
     ): array {
-        
+
         // Default action
         $action = [
             'action' => 'idle',
@@ -306,18 +359,18 @@ class BatteryPlanner
             'reason' => 'No action needed',
             'confidence' => 'medium'
         ];
-        
+
         // Emergency situations first
         if ($currentSOC <= self::MIN_SOC) {
             return [
                 'action' => 'charge',
-                'power' => self::MAX_CHARGE_POWER * 0.5,
-                'duration' => 60,
+                'power' => self::MAX_CHARGE_POWER,
+                'duration' => 15,
                 'reason' => 'Emergency charge - SOC critically low',
                 'confidence' => 'high'
             ];
         }
-        
+
         if ($currentSOC >= self::MAX_SOC) {
             if ($netLoad > 0) {
                 return [
@@ -329,51 +382,34 @@ class BatteryPlanner
                 ];
             }
         }
-        
-        // Price-based decisions
-        if ($currentPrice <= self::VERY_CHEAP_THRESHOLD && $currentSOC < 80) {
+
+        // Price-based decisions for 15-minute intervals
+        $avgPrice = $priceContext['average_price'] ?? 0.50;
+
+        if ($currentPrice < $avgPrice * 0.8 && $currentSOC < 80) {
             return [
                 'action' => 'charge',
                 'power' => self::MAX_CHARGE_POWER,
-                'duration' => 60,
-                'reason' => "Very cheap price: {$currentPrice} SEK/kWh - maximize charging",
+                'duration' => 15,
+                'reason' => sprintf("Very cheap price: %.3f SEK/kWh (%.1f%% below average)",
+                                  $currentPrice, (($avgPrice - $currentPrice) / $avgPrice) * 100),
                 'confidence' => 'high'
             ];
         }
-        
-        if ($currentPrice >= self::VERY_EXPENSIVE_THRESHOLD && $currentSOC > 30) {
+
+        if ($currentPrice > $avgPrice * 1.2 && $currentSOC > 30) {
             return [
                 'action' => 'discharge',
                 'power' => self::MAX_DISCHARGE_POWER,
-                'duration' => 60,
-                'reason' => "Very expensive price: {$currentPrice} SEK/kWh - maximize discharge",
+                'duration' => 15,
+                'reason' => sprintf("Very expensive price: %.3f SEK/kWh (%.1f%% above average)",
+                                  $currentPrice, (($currentPrice - $avgPrice) / $avgPrice) * 100),
                 'confidence' => 'high'
             ];
         }
-        
-        // Context-based decisions
-        if ($priceContext['is_local_minimum'] && $currentSOC < 70) {
-            return [
-                'action' => 'charge',
-                'power' => self::MAX_CHARGE_POWER * 0.8,
-                'duration' => 30,
-                'reason' => 'Local price minimum detected',
-                'confidence' => 'medium'
-            ];
-        }
-        
-        if ($priceContext['is_local_maximum'] && $currentSOC > 40) {
-            return [
-                'action' => 'discharge',
-                'power' => self::MAX_DISCHARGE_POWER * 0.8,
-                'duration' => 30,
-                'reason' => 'Local price maximum detected',
-                'confidence' => 'medium'
-            ];
-        }
-        
-        // Load balancing
-        if (abs($netLoad) > 1.0) { // More than 1kW imbalance
+
+        // Load balancing for 15-minute interval
+        if (abs($netLoad) > 1.0) {
             if ($netLoad > 0 && $currentSOC > 25) {
                 return [
                     'action' => 'discharge',
@@ -383,7 +419,7 @@ class BatteryPlanner
                     'confidence' => 'medium'
                 ];
             }
-            
+
             if ($netLoad < -1.0 && $currentSOC < 85) {
                 return [
                     'action' => 'charge',
@@ -394,65 +430,69 @@ class BatteryPlanner
                 ];
             }
         }
-        
+
         return $action;
     }
 
     /**
      * Analyze price context for immediate decisions
      */
-    private function analyzePriceContext(float $currentPrice, array $nextHours, array $allPrices): array
+    private function analyzePriceContext(float $currentPrice, array $nextIntervals, array $allPrices): array
     {
+        $allPriceValues = array_column($allPrices, 'value');
+        $nextPriceValues = array_column($nextIntervals, 'value');
+
         $context = [
             'is_local_minimum' => false,
             'is_local_maximum' => false,
             'trend' => 'stable',
-            'volatility' => 'low'
+            'volatility' => 'low',
+            'average_price' => array_sum($allPriceValues) / count($allPriceValues)
         ];
-        
-        if (count($nextHours) >= 3) {
-            $avgNext3 = array_sum(array_slice($nextHours, 1, 3)) / 3;
-            
-            // Check if current price is significantly lower/higher than next hours
-            $context['is_local_minimum'] = $currentPrice < $avgNext3 * 0.9;
-            $context['is_local_maximum'] = $currentPrice > $avgNext3 * 1.1;
-            
+
+        if (count($nextPriceValues) >= 4) {
+            $avgNext4 = array_sum(array_slice($nextPriceValues, 1, 4)) / 4;
+
+            // Check if current price is significantly lower/higher than next intervals
+            $context['is_local_minimum'] = $currentPrice < $avgNext4 * 0.95;
+            $context['is_local_maximum'] = $currentPrice > $avgNext4 * 1.05;
+
             // Trend analysis
-            if ($avgNext3 > $currentPrice * 1.1) {
+            if ($avgNext4 > $currentPrice * 1.1) {
                 $context['trend'] = 'increasing';
-            } elseif ($avgNext3 < $currentPrice * 0.9) {
+            } elseif ($avgNext4 < $currentPrice * 0.9) {
                 $context['trend'] = 'decreasing';
             }
         }
-        
+
         // Overall volatility
-        $priceStd = $this->calculateStandardDeviation($allPrices);
-        $priceAvg = array_sum($allPrices) / count($allPrices);
+        $priceStd = $this->calculateStandardDeviation($allPriceValues);
+        $priceAvg = $context['average_price'];
         $volatilityRatio = $priceStd / $priceAvg;
-        
+
         if ($volatilityRatio > 0.3) {
             $context['volatility'] = 'high';
         } elseif ($volatilityRatio > 0.15) {
             $context['volatility'] = 'medium';
         }
-        
+
         return $context;
     }
 
     // Helper methods
-    private function validateInputs(array $hourlyPrices, float $currentSOC): void
+    private function validateInputs(array $intervalPrices, float $currentSOC): void
     {
-        if (empty($hourlyPrices)) {
-            throw new \InvalidArgumentException('Hourly prices array cannot be empty');
+        if (empty($intervalPrices)) {
+            throw new \InvalidArgumentException('Interval prices array cannot be empty');
         }
-        
+
         if ($currentSOC < 0 || $currentSOC > 100) {
             throw new \InvalidArgumentException('Current SOC must be between 0 and 100');
         }
-        
-        foreach ($hourlyPrices as $price) {
-            if ($price < 0 || $price > 10) {
-                throw new \InvalidArgumentException('Invalid price detected');
+
+        foreach ($intervalPrices as $interval) {
+            if (!isset($interval['value']) || $interval['value'] < 0 || $interval['value'] > 10) {
+                throw new \InvalidArgumentException('Invalid price detected in interval data');
             }
         }
     }
@@ -462,7 +502,7 @@ class BatteryPlanner
         sort($values);
         $count = count($values);
         $middle = floor($count / 2);
-        
+
         if ($count % 2 === 0) {
             return ($values[$middle - 1] + $values[$middle]) / 2;
         }
@@ -487,65 +527,84 @@ class BatteryPlanner
     {
         if ($action === 'charge') {
             // Lower prices = higher priority
-            return max(0, ($stats['avg'] - $price) / ($stats['avg'] - $stats['min'])) * 100;
+            $maxSavings = $stats['avg'] - $stats['min'];
+            $actualSavings = $stats['avg'] - $price;
+            return max(0, ($actualSavings / $maxSavings)) * 100;
         } else {
             // Higher prices = higher priority
-            return max(0, ($price - $stats['avg']) / ($stats['max'] - $stats['avg'])) * 100;
+            $maxEarnings = $stats['max'] - $stats['avg'];
+            $actualEarnings = $price - $stats['avg'];
+            return max(0, ($actualEarnings / $maxEarnings)) * 100;
         }
     }
 
     private function optimizeSchedule(array $schedule, float $currentSOC): array
     {
-        // Remove overlapping sessions and ensure SOC constraints
+        // Remove conflicting sessions and ensure SOC constraints
         $optimized = [];
         $simulatedSOC = $currentSOC;
-        
+
         foreach ($schedule as $session) {
-            // Check if session is still valid
-            if ($session['action'] === 'charge' && $simulatedSOC >= self::MAX_SOC * 0.95) {
-                continue;
+            // Check if session is still valid given current SOC
+            if ($session['action'] === 'charge' && $simulatedSOC >= self::MAX_SOC * 0.98) {
+                // Skip charging if nearly full
+                $session['action'] = 'idle';
+                $session['power'] = 0;
+                $session['energy_change'] = 0;
+                $session['target_soc'] = $simulatedSOC;
+                $session['reason'] = 'Skipped charge - SOC near maximum';
             }
-            
-            if ($session['action'] === 'discharge' && $simulatedSOC <= self::MIN_SOC * 1.05) {
-                continue;
+
+            if ($session['action'] === 'discharge' && $simulatedSOC <= self::MIN_SOC * 1.02) {
+                // Skip discharging if nearly empty
+                $session['action'] = 'idle';
+                $session['power'] = 0;
+                $session['energy_change'] = 0;
+                $session['target_soc'] = $simulatedSOC;
+                $session['reason'] = 'Skipped discharge - SOC near minimum';
             }
-            
+
             $optimized[] = $session;
-            
+
             // Update simulated SOC
-            if ($session['action'] === 'charge') {
-                $simulatedSOC = min(self::MAX_SOC, $simulatedSOC + $session['energy_change']);
-            } else {
-                $simulatedSOC = max(self::MIN_SOC, $simulatedSOC - $session['energy_change']);
-            }
+            $simulatedSOC = $session['target_soc'];
         }
-        
+
         return $optimized;
     }
 
     private function generateScheduleSummary(array $schedule, float $currentSOC): array
     {
-        $totalChargeSessions = count(array_filter($schedule, fn($s) => $s['action'] === 'charge'));
-        $totalDischargeSessions = count(array_filter($schedule, fn($s) => $s['action'] === 'discharge'));
-        
-        $totalSavings = array_sum(array_column(
-            array_filter($schedule, fn($s) => $s['action'] === 'charge'), 
-            'savings_estimate'
-        ));
-        
-        $totalEarnings = array_sum(array_column(
-            array_filter($schedule, fn($s) => $s['action'] === 'discharge'), 
-            'earnings_estimate'
-        ));
-        
+        $chargeIntervals = array_filter($schedule, fn($s) => $s['action'] === 'charge');
+        $dischargeIntervals = array_filter($schedule, fn($s) => $s['action'] === 'discharge');
+        $idleIntervals = array_filter($schedule, fn($s) => $s['action'] === 'idle');
+
+        // Calculate total energy and financial impact
+        $totalChargeEnergy = count($chargeIntervals) * self::ENERGY_PER_INTERVAL;
+        $totalDischargeEnergy = count($dischargeIntervals) * self::ENERGY_PER_INTERVAL;
+
+        $totalSavings = array_sum(array_map(function($interval) {
+            return $interval['energy_change'] * ($interval['savings'] ?? 0);
+        }, $chargeIntervals));
+
+        $totalEarnings = array_sum(array_map(function($interval) {
+            return $interval['energy_change'] * ($interval['earnings'] ?? 0) * self::ROUND_TRIP_EFFICIENCY;
+        }, $dischargeIntervals));
+
         return [
-            'total_sessions' => count($schedule),
-            'charge_sessions' => $totalChargeSessions,
-            'discharge_sessions' => $totalDischargeSessions,
+            'total_intervals' => count($schedule),
+            'charge_intervals' => count($chargeIntervals),
+            'discharge_intervals' => count($dischargeIntervals),
+            'idle_intervals' => count($idleIntervals),
+            'charge_hours' => count($chargeIntervals) * 0.25, // 15 minutes = 0.25 hours
+            'discharge_hours' => count($dischargeIntervals) * 0.25,
+            'total_charge_energy' => $totalChargeEnergy,
+            'total_discharge_energy' => $totalDischargeEnergy,
             'estimated_savings' => $totalSavings,
             'estimated_earnings' => $totalEarnings,
             'net_benefit' => $totalEarnings + $totalSavings,
-            'starting_soc' => $currentSOC
+            'starting_soc' => $currentSOC,
+            'efficiency_utilized' => self::ROUND_TRIP_EFFICIENCY
         ];
     }
 }

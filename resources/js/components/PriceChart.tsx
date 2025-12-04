@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import Highcharts from 'highcharts';
 import HighchartsReact from 'highcharts-react-official';
 
@@ -8,18 +8,32 @@ interface PriceData {
   hour: string; // Human readable hour
 }
 
-interface PriceChartProps {
-  prices: PriceData[];
-  loading?: boolean;
-  error?: string;
+interface ChargeInterval {
+  timestamp: number; // Unix timestamp in milliseconds
+  power: number; // Charging power in kW
+  reason: string; // Reason for charging
+  price: number; // Price at this interval
 }
 
-export default function PriceChart({ prices, loading = false, error }: PriceChartProps) {
+interface PriceChartProps {
+  prices: PriceData[];
+  chargeIntervals?: ChargeInterval[];
+  loading?: boolean;
+  error?: string;
+  provider?: {
+    name: string;
+    description: string;
+    area: string;
+    granularity: string;
+  };
+}
+
+export default function PriceChart({ prices, chargeIntervals = [], loading = false, error, provider }: PriceChartProps) {
   const chartRef = useRef<HighchartsReact.RefObject>(null);
 
   const chartOptions: Highcharts.Options = {
     title: {
-      text: 'Stockholm Electricity Prices (SE3)',
+      text: 'Swedish Electricity Prices',
       style: {
         fontSize: '16px',
         fontWeight: '600',
@@ -28,7 +42,7 @@ export default function PriceChart({ prices, loading = false, error }: PriceChar
     },
     
     subtitle: {
-      text: 'Nord Pool hourly prices - Today',
+      text: provider?.description || 'Electricity prices with 15-minute intervals - Today',
       style: {
         fontSize: '12px',
         color: '#6b7280'
@@ -55,53 +69,78 @@ export default function PriceChart({ prices, loading = false, error }: PriceChar
       gridLineColor: '#e5e7eb'
     },
 
-    yAxis: {
-      title: {
-        text: 'Price (SEK/kWh)',
-        style: { color: '#6b7280', fontSize: '12px' }
-      },
-      labels: {
-        format: '{value:.3f}',
-        style: { color: '#6b7280', fontSize: '11px' }
-      },
-      gridLineColor: '#e5e7eb',
-      plotBands: [
-        {
-          from: 0,
-          to: 0.15,
-          color: 'rgba(34, 197, 94, 0.1)',
-          label: {
-            text: 'Cheap',
-            style: { color: '#22c55e', fontSize: '10px' }
-          }
+    yAxis: [
+      {
+        // Primary y-axis for price
+        title: {
+          text: 'Price (SEK/kWh)',
+          style: { color: '#6b7280', fontSize: '12px' }
         },
-        {
-          from: 1.5,
-          to: 10,
-          color: 'rgba(239, 68, 68, 0.1)', 
-          label: {
-            text: 'Expensive',
-            style: { color: '#ef4444', fontSize: '10px' }
+        labels: {
+          format: '{value:.3f}',
+          style: { color: '#6b7280', fontSize: '11px' }
+        },
+        gridLineColor: '#e5e7eb',
+        plotBands: [
+          {
+            from: 0,
+            to: 0.15,
+            color: 'rgba(34, 197, 94, 0.1)',
+            label: {
+              text: 'Cheap',
+              style: { color: '#22c55e', fontSize: '10px' }
+            }
+          },
+          {
+            from: 1.5,
+            to: 10,
+            color: 'rgba(239, 68, 68, 0.1)', 
+            label: {
+              text: 'Expensive',
+              style: { color: '#ef4444', fontSize: '10px' }
+            }
           }
-        }
-      ]
-    },
+        ]
+      },
+      {
+        // Secondary y-axis for charging power
+        title: {
+          text: 'Charging Power (kW)',
+          style: { color: '#3b82f6', fontSize: '12px' }
+        },
+        labels: {
+          format: '{value:.1f}',
+          style: { color: '#3b82f6', fontSize: '11px' }
+        },
+        opposite: true,
+        gridLineWidth: 0,
+        min: 0,
+        max: 5 // Typical max charging power
+      }
+    ],
 
     tooltip: {
       shared: true,
       formatter: function() {
-        const point = this.points?.[0];
-        if (!point) return '';
+        const points = this.points || [];
+        if (points.length === 0) return '';
         
-        return `
-          <b>${Highcharts.dateFormat('%H:%M', point.x)}</b><br/>
-          Price: <b>${point.y?.toFixed(3)} SEK/kWh</b><br/>
-          <span style="color: ${point.y! < 0.15 ? '#22c55e' : point.y! > 1.5 ? '#ef4444' : '#f59e0b'}">
-            ${point.y! < 0.15 ? '🟢 Cheap - Good for charging' : 
-              point.y! > 1.5 ? '🔴 Expensive - Use battery' : 
-              '🟡 Medium price'}
-          </span>
-        `;
+        let tooltip = `<b>${Highcharts.dateFormat('%H:%M', points[0].x)}</b><br/>`;
+        
+        points.forEach(point => {
+          if (point.series.name === 'Electricity Price') {
+            tooltip += `Price: <b>${point.y?.toFixed(3)} SEK/kWh</b><br/>`;
+            tooltip += `<span style="color: ${point.y! < 0.15 ? '#22c55e' : point.y! > 1.5 ? '#ef4444' : '#f59e0b'}">
+              ${point.y! < 0.15 ? '🟢 Cheap - Good for charging' : 
+                point.y! > 1.5 ? '🔴 Expensive - Use battery' : 
+                '🟡 Medium price'}
+            </span><br/>`;
+          } else if (point.series.name === 'Battery Charging') {
+            tooltip += `<span style="color: #3b82f6">🔋 Charging: <b>${point.y?.toFixed(1)} kW</b></span><br/>`;
+          }
+        });
+        
+        return tooltip;
       },
       backgroundColor: 'rgba(255, 255, 255, 0.95)',
       borderColor: '#e5e7eb',
@@ -110,7 +149,14 @@ export default function PriceChart({ prices, loading = false, error }: PriceChar
     },
 
     legend: {
-      enabled: false
+      enabled: chargeIntervals.length > 0,
+      layout: 'horizontal',
+      align: 'center',
+      verticalAlign: 'bottom',
+      itemStyle: {
+        fontSize: '12px',
+        color: '#6b7280'
+      }
     },
 
     plotOptions: {
@@ -126,31 +172,52 @@ export default function PriceChart({ prices, loading = false, error }: PriceChar
             lineWidth: 3
           }
         }
+      },
+      column: {
+        pointPadding: 0,
+        groupPadding: 0,
+        borderWidth: 0,
+        opacity: 0.7
       }
     },
 
-    series: [{
-      type: 'line',
-      name: 'Electricity Price',
-      data: prices.map(price => [
-        price.timestamp * 1000, // Convert to milliseconds for Highcharts
-        price.price
-      ]),
-      color: '#3b82f6',
-      zones: [
-        {
-          value: 0.15,
-          color: '#22c55e' // Green for cheap prices
-        },
-        {
-          value: 1.5, 
-          color: '#f59e0b' // Orange for medium prices
-        },
-        {
-          color: '#ef4444' // Red for expensive prices
+    series: [
+      {
+        type: 'line',
+        name: 'Electricity Price',
+        data: prices.map(price => [
+          price.timestamp * 1000, // Convert to milliseconds for Highcharts
+          price.price
+        ]),
+        color: '#3b82f6',
+        zones: [
+          {
+            value: 0.15,
+            color: '#22c55e' // Green for cheap prices
+          },
+          {
+            value: 1.5, 
+            color: '#f59e0b' // Orange for medium prices
+          },
+          {
+            color: '#ef4444' // Red for expensive prices
+          }
+        ]
+      },
+      ...(chargeIntervals.length > 0 ? [{
+        type: 'column' as const,
+        name: 'Battery Charging',
+        data: chargeIntervals.map(interval => [
+          interval.timestamp, // Already in milliseconds
+          interval.power
+        ]),
+        color: 'rgba(59, 130, 246, 0.6)', // Blue with transparency
+        yAxis: 1, // Use secondary y-axis for power
+        tooltip: {
+          valueSuffix: ' kW'
         }
-      ]
-    }],
+      }] : [])
+    ],
 
     credits: {
       enabled: false

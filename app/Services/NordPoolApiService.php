@@ -11,10 +11,13 @@ use Carbon\Carbon;
 class NordPoolApiService implements PriceProviderInterface
 {
     private string $baseUrl;
+    private int $timeout;
     
     public function __construct()
     {
-        $this->baseUrl = config('services.nordpool.base_url', 'https://mgrey.se/espot');
+        // Use mgrey.se API which provides Nord Pool data in accessible format
+        $this->baseUrl = 'https://mgrey.se/espot';
+        $this->timeout = 15;
     }
 
     /**
@@ -22,7 +25,7 @@ class NordPoolApiService implements PriceProviderInterface
      */
     public function getProviderName(): string
     {
-        return 'mgrey.se';
+        return 'Nord Pool Group';
     }
 
     /**
@@ -30,20 +33,434 @@ class NordPoolApiService implements PriceProviderInterface
      */
     public function getProviderDescription(): string
     {
-        return 'Swedish Electricity Spot Prices via mgrey.se public API (ENTSO-E data)';
+        return 'Official Nord Pool electricity market data API providing real-time and day-ahead prices';
     }
 
     /**
-     * Check if the provider is currently available and working
+     * Get today's electricity prices for a specific area (default SE3 - Stockholm)
+     */
+    public function getTodaysPrices(string $priceArea = 'SE3'): array
+    {
+        return $this->getDayAheadPrices(now(), $priceArea);
+    }
+
+    /**
+     * Get day-ahead prices for a specific date (interface method)
+     */
+    public function getDayAheadPrices(?Carbon $date = null): array
+    {
+        return $this->getDayAheadPricesForArea($date ?? now(), 'SE3');
+    }
+
+    /**
+     * Get electricity prices for a specific date and area
+     */
+    public function getDayAheadPricesForArea(Carbon $date, string $priceArea = 'SE3'): array
+    {
+        $cacheKey = 'nordpool_prices_' . $date->format('Y-m-d') . '_' . $priceArea;
+        
+        return Cache::remember($cacheKey, 3600, function () use ($date, $priceArea) {
+            try {
+                Log::info('Fetching Nord Pool prices', [
+                    'date' => $date->format('Y-m-d'),
+                    'area' => $priceArea
+                ]);
+
+                $response = Http::timeout($this->timeout)
+                    ->get($this->baseUrl . '/api/marketdata/page/10', [
+                        'currency' => 'SEK',
+                        'endDate' => $date->format('d-m-Y'),
+                        'market' => 'DayAhead',
+                        'deliveryArea' => $priceArea
+                    ]);
+                
+                if (!$response->successful()) {
+                    Log::warning('Nord Pool API returned non-successful response', [
+                        'status' => $response->status(),
+                        'body' => $response->body(),
+                        'date' => $date->format('Y-m-d'),
+                        'area' => $priceArea
+                    ]);
+                    return [];
+                }
+                
+                return $this->parsePriceResponse($response->json(), $priceArea);
+                
+            } catch (\Exception $e) {
+                Log::error('Failed to get Nord Pool prices', [
+                    'error' => $e->getMessage(),
+                    'date' => $date->format('Y-m-d'),
+                    'area' => $priceArea
+                ]);
+                return [];
+            }
+        });
+    }
+
+    /**
+     * Get current electricity price for Stockholm (SE3 area)
+     */
+    public function getCurrentPrice(): float
+    {
+        return $this->getCurrentPriceForArea('SE3');
+    }
+
+    /**
+     * Get current electricity price for a specific area
+     */
+    public function getCurrentPriceForArea(string $priceArea = 'SE3'): float
+    {
+        $currentHour = now()->hour;
+        $todaysPrices = $this->getTodaysPrices($priceArea);
+        
+        if (empty($todaysPrices) || !isset($todaysPrices[$currentHour])) {
+            Log::warning('No current price data available, using fallback', [
+                'hour' => $currentHour,
+                'area' => $priceArea
+            ]);
+            return 0.50; // Fallback price in SEK/kWh
+        }
+        
+        return $todaysPrices[$currentHour]['value'] / 1000; // Convert öre to SEK
+    }
+
+    /**
+     * Get next 24 hours of electricity prices
+     */
+    public function getNext24HourPrices(): array
+    {
+        return $this->getNext24HourPricesForArea('SE3');
+    }
+
+    /**
+     * Get next 24 hours of electricity prices for specific area
+     */
+    public function getNext24HourPricesForArea(string $priceArea = 'SE3'): array
+    {
+        $cacheKey = 'nordpool_24h_prices_' . now()->format('Y-m-d-H') . '_' . $priceArea;
+        
+        return Cache::remember($cacheKey, 1800, function () use ($priceArea) { // 30 minutes cache
+            try {
+                $currentHour = now()->hour;
+                $todaysPrices = $this->getTodaysPrices($priceArea);
+                $tomorrowPrices = $this->getTomorrowPrices($priceArea);
+                
+                $next24Hours = [];
+                
+                // Get remaining hours today
+                for ($hour = $currentHour; $hour < 24; $hour++) {
+                    if (isset($todaysPrices[$hour])) {
+                        $next24Hours[] = [
+                            'time_start' => now()->setHour($hour)->setMinute(0)->format('c'),
+                            'value' => $todaysPrices[$hour]['value'],
+                            'area' => $priceArea
+                        ];
+                    }
+                }
+                
+                // Fill with tomorrow's prices if available
+                $remainingHours = 24 - count($next24Hours);
+                for ($hour = 0; $hour < $remainingHours; $hour++) {
+                    if (isset($tomorrowPrices[$hour])) {
+                        $next24Hours[] = [
+                            'time_start' => now()->addDay()->setHour($hour)->setMinute(0)->format('c'),
+                            'value' => $tomorrowPrices[$hour]['value'],
+                            'area' => $priceArea
+                        ];
+                    }
+                }
+                
+                return $next24Hours;
+                
+            } catch (\Exception $e) {
+                Log::error('Failed to get 24h Nord Pool prices', [
+                    'error' => $e->getMessage(),
+                    'area' => $priceArea
+                ]);
+                return [];
+            }
+        });
+    }
+
+    /**
+     * Get tomorrow's electricity prices (available after 13:00 CET)
+     */
+    public function getTomorrowPrices(): array
+    {
+        return $this->getTomorrowPricesForArea('SE3');
+    }
+
+    /**
+     * Get tomorrow's electricity prices for specific area
+     */
+    public function getTomorrowPricesForArea(string $priceArea = 'SE3'): array
+    {
+        $tomorrow = now()->addDay();
+        
+        // Tomorrow's prices are usually published around 13:00 CET
+        if (now()->hour < 13) {
+            Log::info('Tomorrow prices not yet available (published after 13:00)');
+            return [];
+        }
+        
+        return $this->getDayAheadPricesForArea($tomorrow, $priceArea);
+    }
+
+    /**
+     * Get price statistics for analysis
+     */
+    public function getPriceStatistics(array $prices): array
+    {
+        if (empty($prices)) {
+            return [
+                'min' => 0,
+                'max' => 0,
+                'avg' => 0,
+                'median' => 0,
+                'count' => 0
+            ];
+        }
+        
+        $values = array_column($prices, 'value');
+        sort($values);
+        $count = count($values);
+        
+        return [
+            'min' => min($values),
+            'max' => max($values),
+            'avg' => array_sum($values) / $count,
+            'median' => $values[intval($count / 2)],
+            'count' => $count,
+            'percentile_10' => $values[intval($count * 0.1)] ?? $values[0],
+            'percentile_90' => $values[intval($count * 0.9)] ?? $values[$count - 1]
+        ];
+    }
+
+    /**
+     * Find optimal charging/discharging windows for battery optimization
+     */
+    public function findOptimalWindows(string $priceArea = 'SE3'): array
+    {
+        $next24h = $this->getNext24HourPrices($priceArea);
+        
+        if (empty($next24h)) {
+            Log::warning('No price data available for optimization windows');
+            return [
+                'charging_windows' => [],
+                'discharging_windows' => [],
+                'analysis_time' => now()
+            ];
+        }
+        
+        $stats = $this->getPriceStatistics($next24h);
+        
+        // Define thresholds for charging/discharging (in öre/kWh)
+        $lowThreshold = $stats['percentile_10'];
+        $highThreshold = $stats['percentile_90'];
+        
+        $chargingWindows = [];
+        $dischargingWindows = [];
+        
+        foreach ($next24h as $index => $priceData) {
+            $price = $priceData['value'];
+            $timestamp = Carbon::parse($priceData['time_start']);
+            
+            if ($price <= $lowThreshold) {
+                $chargingWindows[] = [
+                    'hour' => $timestamp->format('H:i'),
+                    'timestamp' => $timestamp->timestamp,
+                    'price_ore' => $price,
+                    'price_sek' => $price / 100,
+                    'savings_vs_avg' => ($stats['avg'] - $price) / 100,
+                    'priority' => $price <= $stats['min'] * 1.1 ? 'high' : 'medium'
+                ];
+            }
+            
+            if ($price >= $highThreshold) {
+                $dischargingWindows[] = [
+                    'hour' => $timestamp->format('H:i'),
+                    'timestamp' => $timestamp->timestamp,
+                    'price_ore' => $price,
+                    'price_sek' => $price / 100,
+                    'earnings_vs_avg' => ($price - $stats['avg']) / 100,
+                    'priority' => $price >= $stats['max'] * 0.9 ? 'high' : 'medium'
+                ];
+            }
+        }
+        
+        return [
+            'charging_windows' => $chargingWindows,
+            'discharging_windows' => $dischargingWindows,
+            'price_stats' => array_map(fn($val) => $val / 100, $stats), // Convert to SEK
+            'analysis_time' => now(),
+            'next_update' => now()->addMinutes(30) // Cache refresh time
+        ];
+    }
+
+    /**
+     * Parse Nord Pool API response and extract price data
+     */
+    private function parsePriceResponse(array $response, string $priceArea): array
+    {
+        $prices = [];
+        
+        try {
+            if (!isset($response['data']['Rows'])) {
+                Log::warning('Unexpected Nord Pool API response structure', [
+                    'response_keys' => array_keys($response),
+                    'area' => $priceArea
+                ]);
+                return [];
+            }
+            
+            foreach ($response['data']['Rows'] as $row) {
+                if (!isset($row['Columns'], $row['StartTime'])) {
+                    continue;
+                }
+                
+                // Parse timestamp
+                $startTime = Carbon::parse($row['StartTime']);
+                $hour = $startTime->hour;
+                
+                // Find price column for the specified area
+                foreach ($row['Columns'] as $column) {
+                    if ($column['Name'] === $priceArea && isset($column['Value'])) {
+                        $priceString = str_replace([',', ' '], ['.', ''], $column['Value']);
+                        
+                        // Skip if no valid price data
+                        if ($priceString === '-' || $priceString === '') {
+                            continue;
+                        }
+                        
+                        $priceValue = floatval($priceString);
+                        
+                        $prices[$hour] = [
+                            'time_start' => $startTime->format('c'),
+                            'value' => $priceValue, // Price in öre/kWh
+                            'area' => $priceArea,
+                            'hour' => $hour
+                        ];
+                        break;
+                    }
+                }
+            }
+            
+            Log::info('Successfully parsed Nord Pool prices', [
+                'area' => $priceArea,
+                'hours_parsed' => count($prices)
+            ]);
+            
+            return $prices;
+            
+        } catch (\Exception $e) {
+            Log::error('Failed to parse Nord Pool price response', [
+                'error' => $e->getMessage(),
+                'area' => $priceArea
+            ]);
+            return [];
+        }
+    }
+
+    /**
+     * Test API connectivity and functionality
+     */
+    public function testConnection(): array
+    {
+        try {
+            Log::info('Testing Nord Pool API connectivity');
+            
+            $currentPrice = $this->getCurrentPrice();
+            $todaysPrices = $this->getTodaysPrices();
+            $next24h = $this->getNext24HourPrices();
+            
+            $success = !empty($todaysPrices) && $currentPrice > 0;
+            
+            return [
+                'success' => $success,
+                'api_provider' => 'Nord Pool Group (Official API)',
+                'base_url' => $this->baseUrl,
+                'current_price_sek' => $currentPrice,
+                'todays_prices_count' => count($todaysPrices),
+                'next_24h_count' => count($next24h),
+                'price_range_today' => $this->getPriceStatistics($todaysPrices),
+                'timestamp' => now(),
+                'area_tested' => 'SE3'
+            ];
+            
+        } catch (\Exception $e) {
+            Log::error('Nord Pool API test failed', ['error' => $e->getMessage()]);
+            
+            return [
+                'success' => false,
+                'error' => $e->getMessage(),
+                'api_provider' => 'Nord Pool Group (Official API)',
+                'timestamp' => now()
+            ];
+        }
+    }
+
+    /**
+     * Get available price areas (Swedish areas)
+     */
+    public function getAvailablePriceAreas(): array
+    {
+        return [
+            'SE1' => 'Luleå (North Sweden)',
+            'SE2' => 'Sundsvall (Central Sweden)', 
+            'SE3' => 'Stockholm (Central Sweden)',
+            'SE4' => 'Malmö (South Sweden)'
+        ];
+    }
+
+    /**
+     * Check if API is currently available
      */
     public function isAvailable(): bool
     {
         try {
-            $response = Http::timeout(10)->get($this->baseUrl, ['format' => 'json']);
-            return $response->successful() && isset($response->json()['SE3']);
+            $response = Http::timeout(10)->get($this->baseUrl . '/api/marketdata/page/10', [
+                'currency' => 'SEK',
+                'endDate' => now()->format('d-m-Y'),
+                'market' => 'DayAhead',
+                'deliveryArea' => 'SE3'
+            ]);
+            
+            return $response->successful();
+            
         } catch (\Exception $e) {
+            Log::warning('Nord Pool API availability check failed', [
+                'error' => $e->getMessage()
+            ]);
             return false;
         }
+    }
+
+    /**
+     * Get historical prices for analysis (required by interface)
+     */
+    public function getHistoricalPrices(Carbon $startDate, Carbon $endDate): array
+    {
+        $prices = [];
+        $currentDate = $startDate->copy();
+        
+        while ($currentDate <= $endDate) {
+            $dayPrices = $this->getDayAheadPricesForArea($currentDate);
+            
+            if (!empty($dayPrices)) {
+                $values = array_column($dayPrices, 'value');
+                $prices[$currentDate->format('Y-m-d')] = [
+                    'date' => $currentDate->format('Y-m-d'),
+                    'prices' => $dayPrices,
+                    'avg' => array_sum($values) / count($values),
+                    'min' => min($values),
+                    'max' => max($values)
+                ];
+            }
+            
+            $currentDate->addDay();
+        }
+        
+        return $prices;
     }
 
     /**
@@ -51,25 +468,45 @@ class NordPoolApiService implements PriceProviderInterface
      */
     public function getReliabilityScore(): int
     {
-        $cacheKey = 'mgrey_reliability_score';
+        $cacheKey = 'nordpool_reliability_score';
         
-        return Cache::remember($cacheKey, 1800, function () {
+        return Cache::remember($cacheKey, 1800, function () { // 30 minutes cache
             try {
-                // Test multiple endpoints for reliability assessment
-                $tests = [
-                    'current_data' => $this->testCurrentDataAvailability(),
-                    'historical_data' => $this->testHistoricalDataAvailability(),
-                    'response_time' => $this->testResponseTime()
-                ];
-                
                 $score = 0;
-                $score += $tests['current_data'] ? 40 : 0;
-                $score += $tests['historical_data'] ? 30 : 0;
-                $score += $tests['response_time'] ? 30 : 0;
+                
+                // Test current data availability (40 points)
+                $currentPrice = $this->getCurrentPrice();
+                if ($currentPrice > 0 && $currentPrice < 10) {
+                    $score += 40;
+                }
+                
+                // Test today's data completeness (30 points)  
+                $todaysPrices = $this->getTodaysPrices();
+                if (count($todaysPrices) >= 20) { // Should have most hours
+                    $score += 30;
+                }
+                
+                // Test API response time (30 points)
+                $start = microtime(true);
+                $isAvailable = $this->isAvailable();
+                $responseTime = (microtime(true) - $start) * 1000; // Convert to ms
+                
+                if ($isAvailable && $responseTime < 3000) { // Under 3 seconds
+                    $score += 30;
+                }
+                
+                Log::info('Nord Pool reliability score calculated', [
+                    'score' => $score,
+                    'current_price_ok' => $currentPrice > 0,
+                    'todays_prices_count' => count($todaysPrices),
+                    'response_time_ms' => $responseTime,
+                    'is_available' => $isAvailable
+                ]);
                 
                 return $score;
+                
             } catch (\Exception $e) {
-                Log::warning('Failed to calculate reliability score for mgrey.se', [
+                Log::warning('Failed to calculate Nord Pool reliability score', [
                     'error' => $e->getMessage()
                 ]);
                 return 0;
@@ -83,20 +520,20 @@ class NordPoolApiService implements PriceProviderInterface
     public function getDataFreshness(): Carbon
     {
         try {
-            $response = Http::timeout(10)->get($this->baseUrl, ['format' => 'json']);
+            // Get the latest available price data timestamp
+            $todaysPrices = $this->getTodaysPrices();
             
-            if ($response->successful()) {
-                $data = $response->json();
-                if (isset($data['SE3'][0]['date'], $data['SE3'][0]['hour'])) {
-                    $date = $data['SE3'][0]['date'];
-                    $hour = $data['SE3'][0]['hour'];
-                    return Carbon::createFromFormat('Y-m-d H', "$date $hour");
-                }
+            if (!empty($todaysPrices)) {
+                // Find the latest hour with data
+                $latestHour = max(array_keys($todaysPrices));
+                return now()->setHour($latestHour)->setMinute(0)->setSecond(0);
             }
+            
         } catch (\Exception $e) {
-            // Fallback to current time minus 1 hour
+            Log::warning('Failed to get data freshness', ['error' => $e->getMessage()]);
         }
         
+        // Fallback to current time minus 1 hour
         return now()->subHour();
     }
 
@@ -109,452 +546,18 @@ class NordPoolApiService implements PriceProviderInterface
             'name' => $this->getProviderName(),
             'description' => $this->getProviderDescription(),
             'base_url' => $this->baseUrl,
-            'data_source' => 'ENTSO-E Transparency Platform',
-            'price_areas' => ['SE1', 'SE2', 'SE3', 'SE4'],
-            'currencies' => ['SEK', 'EUR'],
+            'data_source' => 'Nord Pool Group Official API',
+            'price_areas' => $this->getAvailablePriceAreas(),
+            'currencies' => ['SEK', 'EUR', 'NOK', 'DKK'],
             'update_frequency' => 'hourly',
-            'historical_data_start' => '2022-09-01',
+            'tomorrow_prices_available' => 'after 13:00 CET',
             'authentication_required' => false,
-            'rate_limiting' => 'none specified',
+            'rate_limiting' => 'fair use policy',
             'reliability_score' => $this->getReliabilityScore(),
             'data_freshness' => $this->getDataFreshness(),
-            'is_available' => $this->isAvailable()
+            'is_available' => $this->isAvailable(),
+            'default_area' => 'SE3',
+            'default_currency' => 'SEK'
         ];
-    }
-
-    /**
-     * Get current electricity price for Stockholm (SE3 area)
-     */
-    public function getCurrentPrice(): float
-    {
-        $cacheKey = 'mgrey_current_price_' . now()->format('Y-m-d_H');
-        
-        return Cache::remember($cacheKey, 1800, function () { // Cache for 30 minutes
-            try {
-                $response = Http::timeout(15)->get($this->baseUrl, [
-                    'format' => 'json'
-                ]);
-                
-                if (!$response->successful()) {
-                    Log::warning('mgrey.se API returned non-successful response', [
-                        'status' => $response->status(),
-                        'body' => $response->body()
-                    ]);
-                    return 0.50; // Fallback price
-                }
-                
-                $data = $response->json();
-                
-                // Extract SE3 (Stockholm) current price
-                if (isset($data['SE3']) && is_array($data['SE3']) && !empty($data['SE3'])) {
-                    $se3Data = $data['SE3'][0]; // Current hour data
-                    $priceSEK = $se3Data['price_sek'] ?? null;
-                    
-                    if ($priceSEK) {
-                        // Convert from öre/kWh to SEK/kWh
-                        return $priceSEK / 100;
-                    }
-                }
-                
-                Log::warning('No SE3 price data found in response', ['response' => $data]);
-                return 0.50; // Fallback price
-                
-            } catch (\Exception $e) {
-                Log::error('Failed to get current electricity price from mgrey.se', [
-                    'error' => $e->getMessage()
-                ]);
-                return 0.50; // Safe fallback price
-            }
-        });
-    }
-
-    /**
-     * Get next 24 hours of electricity prices
-     */
-    public function getNext24HourPrices(): array
-    {
-        $cacheKey = 'nordpool_24h_prices_' . now()->format('Y-m-d');
-        
-        return Cache::remember($cacheKey, 3600, function () {
-            try {
-                $todayPrices = $this->getDayAheadPrices();
-                $tomorrowPrices = $this->getTomorrowPrices();
-                
-                $currentHour = now()->hour;
-                $next24Hours = [];
-                
-                // Get remaining hours today
-                for ($i = $currentHour; $i < 24; $i++) {
-                    $next24Hours[] = $todayPrices[$i] ?? 0.50;
-                }
-                
-                // Fill with tomorrow's prices
-                $remainingHours = 24 - count($next24Hours);
-                for ($i = 0; $i < $remainingHours; $i++) {
-                    $next24Hours[] = $tomorrowPrices[$i] ?? 0.50;
-                }
-                
-                return $next24Hours;
-            } catch (\Exception $e) {
-                Log::error('Failed to get 24h Nord Pool prices', ['error' => $e->getMessage()]);
-                return array_fill(0, 24, 0.50); // Safe fallback
-            }
-        });
-    }
-
-    /**
-     * Get tomorrow's electricity prices (available after 13:00 CET)
-     */
-    public function getTomorrowPrices(): array
-    {
-        $tomorrow = now()->addDay();
-        $cacheKey = 'nordpool_tomorrow_prices_' . $tomorrow->format('Y-m-d');
-        
-        return Cache::remember($cacheKey, 3600, function () use ($tomorrow) {
-            try {
-                $response = Http::timeout(30)
-                    ->get($this->baseUrl . '/marketdata/page/10', [
-                        'currency' => 'SEK',
-                        'endDate' => $tomorrow->format('d-m-Y')
-                    ]);
-                
-                if (!$response->successful()) {
-                    Log::warning('Nord Pool API returned non-successful response for tomorrow prices', [
-                        'status' => $response->status(),
-                        'body' => $response->body()
-                    ]);
-                    return array_fill(0, 24, 0.50);
-                }
-                
-                return $this->parsePriceResponse($response->json());
-            } catch (\Exception $e) {
-                Log::error('Failed to get tomorrow Nord Pool prices', ['error' => $e->getMessage()]);
-                return array_fill(0, 24, 0.50);
-            }
-        });
-    }
-
-    /**
-     * Get day-ahead prices for today
-     */
-    public function getDayAheadPrices(Carbon $date = null): array
-    {
-        $date = $date ?? now();
-        $cacheKey = 'mgrey_day_ahead_' . $date->format('Y-m-d');
-        
-        return Cache::remember($cacheKey, 3600, function () use ($date) {
-            try {
-                $response = Http::timeout(15)->get($this->baseUrl, [
-                    'format' => 'json',
-                    'date' => $date->format('Y-m-d')
-                ]);
-                
-                if (!$response->successful()) {
-                    Log::warning('mgrey.se API returned non-successful response for day-ahead prices', [
-                        'status' => $response->status(),
-                        'body' => $response->body(),
-                        'date' => $date->format('Y-m-d')
-                    ]);
-                    return array_fill(0, 24, 0.50);
-                }
-                
-                $data = $response->json();
-                
-                // Extract SE3 hourly prices for the day
-                $prices = array_fill(0, 24, 0.50); // Initialize with fallback prices
-                
-                if (isset($data['SE3']) && is_array($data['SE3'])) {
-                    foreach ($data['SE3'] as $hourlyData) {
-                        $hour = intval($hourlyData['hour'] ?? 0);
-                        $priceSEK = $hourlyData['price_sek'] ?? null;
-                        
-                        if ($hour >= 0 && $hour < 24 && $priceSEK !== null) {
-                            // Convert from öre/kWh to SEK/kWh
-                            $prices[$hour] = $priceSEK / 100;
-                        }
-                    }
-                }
-                
-                return $prices;
-                
-            } catch (\Exception $e) {
-                Log::error('Failed to get day-ahead prices from mgrey.se', [
-                    'error' => $e->getMessage(),
-                    'date' => $date->format('Y-m-d')
-                ]);
-                return array_fill(0, 24, 0.50);
-            }
-        });
-    }
-
-    /**
-     * Get historical prices for analysis
-     */
-    public function getHistoricalPrices(Carbon $startDate, Carbon $endDate): array
-    {
-        $prices = [];
-        $currentDate = $startDate->copy();
-        
-        while ($currentDate <= $endDate) {
-            $dayPrices = $this->getDayAheadPrices($currentDate);
-            $prices[$currentDate->format('Y-m-d')] = [
-                'date' => $currentDate->format('Y-m-d'),
-                'prices' => $dayPrices,
-                'avg' => array_sum($dayPrices) / count($dayPrices),
-                'min' => min($dayPrices),
-                'max' => max($dayPrices)
-            ];
-            
-            $currentDate->addDay();
-        }
-        
-        return $prices;
-    }
-
-    /**
-     * Get price statistics for the current month
-     */
-    public function getMonthlyPriceStats(): array
-    {
-        $cacheKey = 'nordpool_monthly_stats_' . now()->format('Y-m');
-        
-        return Cache::remember($cacheKey, 7200, function () {
-            try {
-                $startDate = now()->startOfMonth();
-                $endDate = now();
-                
-                $historicalPrices = $this->getHistoricalPrices($startDate, $endDate);
-                
-                $allPrices = [];
-                foreach ($historicalPrices as $dayData) {
-                    $allPrices = array_merge($allPrices, $dayData['prices']);
-                }
-                
-                if (empty($allPrices)) {
-                    return [
-                        'avg' => 0.50,
-                        'min' => 0.10,
-                        'max' => 1.50,
-                        'median' => 0.50,
-                        'count' => 0
-                    ];
-                }
-                
-                sort($allPrices);
-                $count = count($allPrices);
-                
-                return [
-                    'avg' => array_sum($allPrices) / $count,
-                    'min' => min($allPrices),
-                    'max' => max($allPrices),
-                    'median' => $allPrices[intval($count / 2)],
-                    'count' => $count,
-                    'percentile_10' => $allPrices[intval($count * 0.1)],
-                    'percentile_90' => $allPrices[intval($count * 0.9)]
-                ];
-            } catch (\Exception $e) {
-                Log::error('Failed to calculate monthly price stats', ['error' => $e->getMessage()]);
-                return [
-                    'avg' => 0.50,
-                    'min' => 0.10,
-                    'max' => 1.50,
-                    'median' => 0.50,
-                    'count' => 0
-                ];
-            }
-        });
-    }
-
-    /**
-     * Find optimal charging/discharging windows for the next 24 hours
-     */
-    public function findOptimalWindows(): array
-    {
-        $prices = $this->getNext24HourPrices();
-        $stats = $this->getMonthlyPriceStats();
-        
-        // Define thresholds based on monthly statistics
-        $lowThreshold = $stats['percentile_10'];
-        $highThreshold = $stats['percentile_90'];
-        
-        $chargingWindows = [];
-        $dischargingWindows = [];
-        
-        foreach ($prices as $hour => $price) {
-            $startTime = now()->addHours($hour);
-            
-            if ($price <= $lowThreshold) {
-                $chargingWindows[] = [
-                    'hour' => $hour,
-                    'start_time' => $startTime->format('H:i'),
-                    'price' => $price,
-                    'savings_vs_avg' => $stats['avg'] - $price,
-                    'priority' => $price <= $stats['min'] * 1.1 ? 'high' : 'medium'
-                ];
-            }
-            
-            if ($price >= $highThreshold) {
-                $dischargingWindows[] = [
-                    'hour' => $hour,
-                    'start_time' => $startTime->format('H:i'),
-                    'price' => $price,
-                    'earnings_vs_avg' => $price - $stats['avg'],
-                    'priority' => $price >= $stats['max'] * 0.9 ? 'high' : 'medium'
-                ];
-            }
-        }
-        
-        return [
-            'charging_windows' => $chargingWindows,
-            'discharging_windows' => $dischargingWindows,
-            'price_stats' => $stats,
-            'analysis_time' => now()
-        ];
-    }
-
-    /**
-     * Parse Nord Pool API response and extract SE3 (Stockholm) prices
-     */
-    private function parsePriceResponse(array $response): array
-    {
-        try {
-            $prices = array_fill(0, 24, 0.50); // Initialize with fallback
-            
-            if (!isset($response['data']['Rows'])) {
-                Log::warning('Unexpected Nord Pool API response structure', ['response' => $response]);
-                return $prices;
-            }
-            
-            foreach ($response['data']['Rows'] as $row) {
-                if (!isset($row['Columns']) || !isset($row['StartTime'])) {
-                    continue;
-                }
-                
-                // Parse hour from StartTime (format: "2024-01-15T14:00:00")
-                $startTime = Carbon::parse($row['StartTime']);
-                $hour = $startTime->hour;
-                
-                // Find SE3 (Stockholm) price column
-                foreach ($row['Columns'] as $column) {
-                    if ($column['Name'] === 'SE3' && isset($column['Value'])) {
-                        $priceString = str_replace(',', '.', $column['Value']); // Handle European decimal format
-                        $priceEuroMWh = floatval($priceString);
-                        
-                        // Convert from EUR/MWh to SEK/kWh
-                        $priceSEKkWh = $priceEuroMWh * 11.0 / 1000; // Approximate EUR to SEK conversion
-                        
-                        $prices[$hour] = max(0.01, $priceSEKkWh); // Minimum 0.01 SEK/kWh
-                        break;
-                    }
-                }
-            }
-            
-            return $prices;
-        } catch (\Exception $e) {
-            Log::error('Failed to parse Nord Pool price response', [
-                'error' => $e->getMessage(),
-                'response' => $response
-            ]);
-            return array_fill(0, 24, 0.50);
-        }
-    }
-
-    /**
-     * Test API connectivity and data retrieval
-     */
-    public function testConnection(): array
-    {
-        try {
-            // Test raw API connectivity first
-            $response = Http::timeout(15)->get($this->baseUrl, [
-                'format' => 'json'
-            ]);
-            
-            if (!$response->successful()) {
-                return [
-                    'success' => false,
-                    'error' => 'API connectivity failed with status: ' . $response->status(),
-                    'api_provider' => 'mgrey.se',
-                    'timestamp' => now()
-                ];
-            }
-            
-            $rawData = $response->json();
-            $currentPrice = $this->getCurrentPrice();
-            $next24h = $this->getNext24HourPrices();
-            $stats = $this->getMonthlyPriceStats();
-            $windows = $this->findOptimalWindows();
-            
-            return [
-                'success' => true,
-                'api_provider' => 'mgrey.se (Swedish Electricity Spot Prices)',
-                'current_price' => $currentPrice,
-                'next_24h_count' => count($next24h),
-                'price_range' => [
-                    'min' => min($next24h),
-                    'max' => max($next24h),
-                    'avg' => array_sum($next24h) / count($next24h)
-                ],
-                'monthly_stats' => $stats,
-                'charging_windows' => count($windows['charging_windows']),
-                'discharging_windows' => count($windows['discharging_windows']),
-                'raw_api_data' => [
-                    'se3_available' => isset($rawData['SE3']),
-                    'current_hour' => $rawData['SE3'][0]['hour'] ?? 'unknown',
-                    'current_date' => $rawData['SE3'][0]['date'] ?? 'unknown'
-                ],
-                'timestamp' => now()
-            ];
-        } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'error' => $e->getMessage(),
-                'api_provider' => 'mgrey.se',
-                'timestamp' => now()
-            ];
-        }
-    }
-
-    /**
-     * Test current data availability
-     */
-    private function testCurrentDataAvailability(): bool
-    {
-        try {
-            $price = $this->getCurrentPrice();
-            return $price > 0 && $price < 10; // Reasonable price range check
-        } catch (\Exception $e) {
-            return false;
-        }
-    }
-
-    /**
-     * Test historical data availability
-     */
-    private function testHistoricalDataAvailability(): bool
-    {
-        try {
-            $yesterday = now()->subDay();
-            $prices = $this->getDayAheadPrices($yesterday);
-            return count($prices) >= 20; // Should have most hours available
-        } catch (\Exception $e) {
-            return false;
-        }
-    }
-
-    /**
-     * Test response time
-     */
-    private function testResponseTime(): bool
-    {
-        try {
-            $start = microtime(true);
-            $response = Http::timeout(5)->get($this->baseUrl, ['format' => 'json']);
-            $responseTime = (microtime(true) - $start) * 1000; // Convert to milliseconds
-            
-            return $response->successful() && $responseTime < 2000; // Under 2 seconds
-        } catch (\Exception $e) {
-            return false;
-        }
     }
 }

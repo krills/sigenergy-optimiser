@@ -3,7 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Services\SigenEnergyApiService;
-use App\Services\NordPoolApiService;
+use App\Services\ElprisetjustNuApiService;
+use App\Services\BatteryPlanner;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -12,12 +13,14 @@ use Inertia\Inertia;
 class AdminDashboardController extends Controller
 {
     private SigenEnergyApiService $sigenEnergyApi;
-    private NordPoolApiService $nordPoolApi;
+    private ElprisetjustNuApiService $priceApi;
+    private BatteryPlanner $batteryPlanner;
 
-    public function __construct(SigenEnergyApiService $sigenEnergyApi, NordPoolApiService $nordPoolApi)
+    public function __construct(SigenEnergyApiService $sigenEnergyApi, ElprisetjustNuApiService $priceApi, BatteryPlanner $batteryPlanner)
     {
         $this->sigenEnergyApi = $sigenEnergyApi;
-        $this->nordPoolApi = $nordPoolApi;
+        $this->priceApi = $priceApi;
+        $this->batteryPlanner = $batteryPlanner;
     }
 
     /**
@@ -70,6 +73,9 @@ class AdminDashboardController extends Controller
         
         // Get today's electricity prices
         $pricesData = $this->getTodaysElectricityPrices();
+        
+        // Get battery optimization schedule
+        $batterySchedule = $this->getBatteryOptimizationSchedule($pricesData);
 
         return Inertia::render('Dashboard', [
             'authenticated' => true,
@@ -80,7 +86,8 @@ class AdminDashboardController extends Controller
                 'nextUpdate' => $systemsData['nextUpdate'] ?? null,
                 'dataAge' => $systemsData['dataAge'] ?? null
             ],
-            'electricityPrices' => $pricesData
+            'electricityPrices' => $pricesData,
+            'batterySchedule' => $batterySchedule
         ]);
     }
 
@@ -347,14 +354,14 @@ class AdminDashboardController extends Controller
             return $cachedPrices;
         }
 
-        Log::info('Fetching fresh electricity prices from Nord Pool API');
+        Log::info('Fetching fresh electricity prices from elprisetjustnu.se API');
 
         try {
-            // Get today's prices for Stockholm (SE3)
-            $prices = $this->nordPoolApi->getTodaysPrices('SE3');
+            // Get today's prices (15-minute intervals)
+            $prices = $this->priceApi->getTodaysPrices();
 
             if (empty($prices)) {
-                Log::warning('No electricity prices available from Nord Pool API');
+                Log::warning('No electricity prices available from elprisetjustnu.se API');
                 return [
                     'prices' => [],
                     'loading' => false,
@@ -368,7 +375,7 @@ class AdminDashboardController extends Controller
             foreach ($prices as $priceData) {
                 $formattedPrices[] = [
                     'timestamp' => strtotime($priceData['time_start']),
-                    'price' => $priceData['value'] / 1000, // Convert öre to SEK
+                    'price' => $priceData['value'], // Already in SEK/kWh
                     'hour' => date('H:i', strtotime($priceData['time_start']))
                 ];
             }
@@ -377,7 +384,13 @@ class AdminDashboardController extends Controller
                 'prices' => $formattedPrices,
                 'loading' => false,
                 'error' => null,
-                'lastUpdated' => now()->toISOString()
+                'lastUpdated' => now()->toISOString(),
+                'provider' => [
+                    'name' => $this->priceApi->getProviderName(),
+                    'description' => $this->priceApi->getProviderDescription(),
+                    'area' => config('services.elprisetjustnu.default_area', 'SE3'),
+                    'granularity' => '15min'
+                ]
             ];
 
             // Cache the data for 1 hour
@@ -401,6 +414,98 @@ class AdminDashboardController extends Controller
                 'loading' => false,
                 'error' => 'Failed to fetch price data: ' . $e->getMessage(),
                 'lastUpdated' => now()->toISOString()
+            ];
+        }
+    }
+
+    /**
+     * Get battery optimization schedule with caching
+     */
+    private function getBatteryOptimizationSchedule(array $pricesData): array
+    {
+        $cacheKey = 'battery_optimization_schedule_' . date('Y-m-d');
+        $cacheDuration = 15; // 15 minutes cache for battery planning
+
+        // Check if we have cached schedule
+        $cachedSchedule = Cache::get($cacheKey);
+        if ($cachedSchedule) {
+            return $cachedSchedule;
+        }
+
+        // Check if price data is available
+        if (empty($pricesData['prices'])) {
+            Log::warning('No price data available for battery optimization');
+            return [
+                'schedule' => [],
+                'chargeIntervals' => [],
+                'analysis' => null,
+                'error' => 'No price data available for optimization'
+            ];
+        }
+
+        Log::info('Generating battery optimization schedule');
+
+        try {
+            // Assume current SOC of 50% for planning (in real implementation, get from Sigenergy API)
+            $currentSOC = 50.0; 
+            
+            // Convert price data to format expected by BatteryPlanner
+            $intervalPrices = [];
+            foreach ($pricesData['prices'] as $priceData) {
+                $intervalPrices[] = [
+                    'time_start' => date('c', $priceData['timestamp']),
+                    'value' => $priceData['price']
+                ];
+            }
+
+            // Generate optimization schedule
+            $result = $this->batteryPlanner->generateSchedule($intervalPrices, $currentSOC);
+
+            // Extract charge intervals for the chart
+            $chargeIntervals = [];
+            foreach ($result['schedule'] as $entry) {
+                if ($entry['action'] === 'charge') {
+                    $chargeIntervals[] = [
+                        'timestamp' => $entry['start_time']->timestamp * 1000, // Convert to milliseconds for Highcharts
+                        'power' => $entry['power'],
+                        'reason' => $entry['reason'],
+                        'price' => $entry['price']
+                    ];
+                }
+            }
+
+            $dataToCache = [
+                'schedule' => $result['schedule'],
+                'chargeIntervals' => $chargeIntervals,
+                'analysis' => $result['analysis'],
+                'summary' => $result['summary'],
+                'generated_at' => now()->toISOString(),
+                'current_soc' => $currentSOC,
+                'error' => null
+            ];
+
+            // Cache the data for 15 minutes
+            Cache::put($cacheKey, $dataToCache, now()->addMinutes($cacheDuration));
+
+            Log::info('Successfully cached battery optimization schedule', [
+                'charge_intervals' => count($chargeIntervals),
+                'total_intervals' => count($result['schedule']),
+                'cache_duration' => $cacheDuration . ' minutes'
+            ]);
+
+            return $dataToCache;
+
+        } catch (\Exception $e) {
+            Log::error('Error generating battery optimization schedule', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return [
+                'schedule' => [],
+                'chargeIntervals' => [],
+                'analysis' => null,
+                'error' => 'Failed to generate optimization schedule: ' . $e->getMessage()
             ];
         }
     }

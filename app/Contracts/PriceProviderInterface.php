@@ -31,7 +31,7 @@ interface PriceProviderInterface
      * Get day-ahead prices for a specific date in SEK/kWh
      * Returns array with 24 hourly prices (hour 0-23)
      */
-    public function getDayAheadPrices(Carbon $date = null): array;
+    public function getDayAheadPrices(?Carbon $date = null): array;
 
     /**
      * Get tomorrow's electricity prices if available
