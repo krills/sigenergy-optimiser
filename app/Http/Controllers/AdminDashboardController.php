@@ -3,20 +3,21 @@
 namespace App\Http\Controllers;
 
 use App\Services\SigenEnergyApiService;
-use App\Services\ElprisetjustNuApiService;
+use App\Contracts\PriceProviderInterface;
 use App\Services\BatteryPlanner;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 use Inertia\Inertia;
 
 class AdminDashboardController extends Controller
 {
     private SigenEnergyApiService $sigenEnergyApi;
-    private ElprisetjustNuApiService $priceApi;
+    private PriceProviderInterface $priceApi;
     private BatteryPlanner $batteryPlanner;
 
-    public function __construct(SigenEnergyApiService $sigenEnergyApi, ElprisetjustNuApiService $priceApi, BatteryPlanner $batteryPlanner)
+    public function __construct(SigenEnergyApiService $sigenEnergyApi, PriceProviderInterface $priceApi, BatteryPlanner $batteryPlanner)
     {
         $this->sigenEnergyApi = $sigenEnergyApi;
         $this->priceApi = $priceApi;
@@ -70,12 +71,15 @@ class AdminDashboardController extends Controller
 
         // Get systems and devices data with caching
         $systemsData = $this->getCachedSystemsAndDevices();
-        
+
         // Get today's electricity prices
         $pricesData = $this->getTodaysElectricityPrices();
-        
+
         // Get battery optimization schedule
         $batterySchedule = $this->getBatteryOptimizationSchedule($pricesData);
+
+        // Get current battery mode from Sigenergy API
+        $currentBatteryMode = $this->getCurrentBatteryMode($systemsData['systems'] ?? []);
 
         return Inertia::render('Dashboard', [
             'authenticated' => true,
@@ -87,7 +91,8 @@ class AdminDashboardController extends Controller
                 'dataAge' => $systemsData['dataAge'] ?? null
             ],
             'electricityPrices' => $pricesData,
-            'batterySchedule' => $batterySchedule
+            'batterySchedule' => $batterySchedule,
+            'currentBatteryMode' => $currentBatteryMode
         ]);
     }
 
@@ -358,7 +363,7 @@ class AdminDashboardController extends Controller
 
         try {
             // Get today's prices (15-minute intervals)
-            $prices = $this->priceApi->getTodaysPrices();
+            $prices = $this->priceApi->getDayAheadPrices();
 
             if (empty($prices)) {
                 Log::warning('No electricity prices available from elprisetjustnu.se API');
@@ -371,12 +376,15 @@ class AdminDashboardController extends Controller
             }
 
             // Convert to format expected by PriceChart component
+            // Note: API data is in Stockholm timezone (+01:00), preserve this for display
             $formattedPrices = [];
             foreach ($prices as $priceData) {
+                // Parse with timezone info, then convert to timestamp for frontend
+                $datetime = Carbon::parse($priceData['time_start']);
                 $formattedPrices[] = [
-                    'timestamp' => strtotime($priceData['time_start']),
+                    'timestamp' => $datetime->timestamp,
                     'price' => $priceData['value'], // Already in SEK/kWh
-                    'hour' => date('H:i', strtotime($priceData['time_start']))
+                    'hour' => $datetime->format('H:i')
                 ];
             }
 
@@ -447,8 +455,8 @@ class AdminDashboardController extends Controller
 
         try {
             // Assume current SOC of 50% for planning (in real implementation, get from Sigenergy API)
-            $currentSOC = 50.0; 
-            
+            $currentSOC = 50.0;
+
             // Convert price data to format expected by BatteryPlanner
             $intervalPrices = [];
             foreach ($pricesData['prices'] as $priceData) {
@@ -461,24 +469,34 @@ class AdminDashboardController extends Controller
             // Generate optimization schedule
             $result = $this->batteryPlanner->generateSchedule($intervalPrices, $currentSOC);
 
-            // Extract charge intervals for the chart
+            // Extract ALL potential charge windows (SOC-agnostic) for the chart
             $chargeIntervals = [];
-            foreach ($result['schedule'] as $entry) {
-                if ($entry['action'] === 'charge') {
-                    $chargeIntervals[] = [
-                        'timestamp' => $entry['start_time']->timestamp * 1000, // Convert to milliseconds for Highcharts
-                        'power' => $entry['power'],
-                        'reason' => $entry['reason'],
-                        'price' => $entry['price']
-                    ];
-                }
+            foreach ($result['analysis']['charge_windows'] as $chargeWindow) {
+                $chargeIntervals[] = [
+                    'timestamp' => $chargeWindow['start_time']->timestamp * 1000, // Convert to milliseconds for Highcharts
+                    'power' => 3.0, // Standard charging power
+                    'reason' => sprintf('Charge window: %.3f SEK/kWh (%s tier)',
+                                       $chargeWindow['price'],
+                                       $chargeWindow['tier'] === 'cheapest' ? 'cheapest' : 'middle'),
+                    'price' => $chargeWindow['price'],
+                    'tier' => $chargeWindow['tier']
+                ];
             }
 
             $dataToCache = [
                 'schedule' => $result['schedule'],
                 'chargeIntervals' => $chargeIntervals,
                 'analysis' => $result['analysis'],
-                'summary' => $result['summary'],
+                'summary' => array_merge($result['summary'], [
+                    'charge_intervals' => count($result['analysis']['charge_windows']),
+                    'discharge_intervals' => count($result['analysis']['discharge_windows']),
+                    'charge_hours' => count($result['analysis']['charge_windows']) * 0.25,
+                    'discharge_hours' => count($result['analysis']['discharge_windows']) * 0.25,
+                    'cheapest_windows' => count(array_filter($result['analysis']['charge_windows'], fn($w) => $w['tier'] === 'cheapest')),
+                    'middle_windows' => count(array_filter($result['analysis']['charge_windows'], fn($w) => $w['tier'] === 'middle')),
+                    'note' => 'Shows ALL potential charge windows (SOC-agnostic)'
+                ]),
+                'priceTiers' => $result['analysis']['price_tiers'] ?? null,
                 'generated_at' => now()->toISOString(),
                 'current_soc' => $currentSOC,
                 'error' => null
@@ -509,4 +527,80 @@ class AdminDashboardController extends Controller
             ];
         }
     }
+
+    /**
+     * Get current battery mode from Sigenergy API
+     */
+    private function getCurrentBatteryMode(array $systems): array
+    {
+        // Stockholm system ID
+        $stockholmSystemId = 'NDXZZ1731665796';
+        
+        try {
+            // Find Stockholm system in the systems data
+            $stockholmSystem = null;
+            foreach ($systems as $system) {
+                if ($system['systemId'] === $stockholmSystemId) {
+                    $stockholmSystem = $system;
+                    break;
+                }
+            }
+
+            if (!$stockholmSystem) {
+                return [
+                    'mode' => 'unknown',
+                    'status' => 'error',
+                    'error' => 'Stockholm system not found'
+                ];
+            }
+
+            // Get energy flow data to determine current mode
+            $energyFlow = $this->sigenEnergyApi->getSystemEnergyFlow($stockholmSystemId);
+            
+            if ($energyFlow === null) {
+                return [
+                    'mode' => 'unknown',
+                    'status' => 'error',
+                    'error' => 'Could not fetch energy flow data'
+                ];
+            }
+
+            // Determine mode based on battery power
+            $batteryPower = $energyFlow['batteryPower'] ?? 0;
+            $batterySoc = $energyFlow['batterySoc'] ?? null;
+            
+            $mode = 'idle';
+            $power_kw = 0;
+            
+            if ($batteryPower > 0.1) {
+                $mode = 'charge';
+                $power_kw = $batteryPower;
+            } elseif ($batteryPower < -0.1) {
+                $mode = 'discharge'; 
+                $power_kw = abs($batteryPower);
+            }
+
+            return [
+                'mode' => $mode,
+                'status' => $mode !== 'idle' ? 'active' : 'inactive',
+                'power_kw' => $power_kw > 0 ? $power_kw : null,
+                'battery_soc' => $batterySoc,
+                'battery_power' => $batteryPower,
+                'last_updated' => now()->toISOString()
+            ];
+
+        } catch (\Exception $e) {
+            Log::error('Error fetching current battery mode from Sigenergy API', [
+                'error' => $e->getMessage(),
+                'system_id' => $stockholmSystemId
+            ]);
+            
+            return [
+                'mode' => 'unknown',
+                'status' => 'error',
+                'error' => $e->getMessage()
+            ];
+        }
+    }
+
 }

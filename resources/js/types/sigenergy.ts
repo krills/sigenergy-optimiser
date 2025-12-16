@@ -106,6 +106,16 @@ export interface BatterySchedule {
   error?: string | null;
 }
 
+export interface CurrentBatteryMode {
+  mode: 'charge' | 'discharge' | 'idle' | 'unknown';
+  status: 'active' | 'inactive' | 'error';
+  power_kw?: number | null;
+  battery_soc?: number | null;
+  battery_power?: number | null;
+  last_updated?: string;
+  error?: string;
+}
+
 // Inertia.js Page Props Interface
 export interface PageProps {
   authenticated: boolean;
@@ -130,6 +140,7 @@ export interface PageProps {
     };
   };
   batterySchedule?: BatterySchedule;
+  currentBatteryMode?: CurrentBatteryMode;
   // Index signature to satisfy Inertia's PageProps constraint
   [key: string]: any;
 }

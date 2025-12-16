@@ -3,6 +3,8 @@
 namespace App\Providers;
 
 use Illuminate\Support\ServiceProvider;
+use App\Contracts\PriceProviderInterface;
+use App\Services\ElprisetjustNuApiService;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -11,7 +13,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // Bind the price provider interface to a concrete implementation
+        $this->app->bind(PriceProviderInterface::class, ElprisetjustNuApiService::class);
     }
 
     /**

@@ -9,7 +9,7 @@ interface RealtimeDataState {
 }
 
 function Dashboard() {
-    const { authenticated, authError, systems, lastUpdated, cacheInfo, electricityPrices, batterySchedule } = usePage<PageProps>().props;
+    const { authenticated, authError, systems, lastUpdated, cacheInfo, electricityPrices, batterySchedule, currentBatteryMode } = usePage<PageProps>().props;
     const [realtimeData, setRealtimeData] = useState<RealtimeDataState>({});
     const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
@@ -153,10 +153,52 @@ function Dashboard() {
                                     <PriceChart 
                                         prices={electricityPrices.prices || []}
                                         chargeIntervals={batterySchedule?.chargeIntervals || []}
+                                        priceTiers={batterySchedule?.priceTiers}
                                         loading={electricityPrices.loading}
                                         error={electricityPrices.error}
                                         provider={electricityPrices.provider}
                                     />
+                                    
+                                    {/* Current Battery Mode */}
+                                    {currentBatteryMode && (
+                                        <div className="mt-4 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+                                            <div className="flex items-center justify-between">
+                                                <div className="flex items-center space-x-2">
+                                                    <span className="font-medium text-gray-700">Current Mode:</span>
+                                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${
+                                                        currentBatteryMode.mode === 'charge' 
+                                                            ? 'bg-green-100 text-green-800'
+                                                            : currentBatteryMode.mode === 'discharge'
+                                                            ? 'bg-orange-100 text-orange-800' 
+                                                            : currentBatteryMode.mode === 'idle'
+                                                            ? 'bg-gray-100 text-gray-800'
+                                                            : 'bg-red-100 text-red-800'
+                                                    }`}>
+                                                        {currentBatteryMode.mode === 'charge' && '⚡'}
+                                                        {currentBatteryMode.mode === 'discharge' && '🔋'}
+                                                        {currentBatteryMode.mode === 'idle' && '⏸️'}
+                                                        {currentBatteryMode.mode === 'unknown' && '❓'}
+                                                        {' '}{currentBatteryMode.mode}
+                                                    </span>
+                                                </div>
+                                                
+                                                {currentBatteryMode.status === 'active' && (
+                                                    <div className="text-sm text-gray-600 flex items-center space-x-4">
+                                                        {currentBatteryMode.power_kw && typeof currentBatteryMode.power_kw === 'number' && (
+                                                            <span>{currentBatteryMode.power_kw.toFixed(1)} kW</span>
+                                                        )}
+                                                        {currentBatteryMode.battery_soc && typeof currentBatteryMode.battery_soc === 'number' && (
+                                                            <span>SOC: {currentBatteryMode.battery_soc.toFixed(0)}%</span>
+                                                        )}
+                                                    </div>
+                                                )}
+                                                
+                                                {currentBatteryMode.status === 'error' && (
+                                                    <span className="text-sm text-red-600">Error: {currentBatteryMode.error}</span>
+                                                )}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             )}
 
@@ -169,20 +211,20 @@ function Dashboard() {
                                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                                             <div className="bg-white rounded-lg p-3 text-center shadow-sm">
                                                 <div className="text-lg font-bold text-green-600">
-                                                    {batterySchedule.summary.charge_intervals}
+                                                    {batterySchedule.summary?.charge_intervals || 0}
                                                 </div>
                                                 <div className="text-sm text-gray-600">Charge Intervals</div>
                                                 <div className="text-xs text-gray-500">
-                                                    {batterySchedule.summary.charge_hours.toFixed(1)}h total
+                                                    {(batterySchedule.summary?.charge_hours || 0).toFixed(1)}h total
                                                 </div>
                                             </div>
                                             <div className="bg-white rounded-lg p-3 text-center shadow-sm">
                                                 <div className="text-lg font-bold text-orange-600">
-                                                    {batterySchedule.summary.discharge_intervals}
+                                                    {batterySchedule.summary?.discharge_intervals || 0}
                                                 </div>
                                                 <div className="text-sm text-gray-600">Discharge Intervals</div>
                                                 <div className="text-xs text-gray-500">
-                                                    {batterySchedule.summary.discharge_hours.toFixed(1)}h total
+                                                    {(batterySchedule.summary?.discharge_hours || 0).toFixed(1)}h total
                                                 </div>
                                             </div>
                                             <div className="bg-white rounded-lg p-3 text-center shadow-sm">
@@ -193,12 +235,12 @@ function Dashboard() {
                                                 <div className="text-xs text-gray-500">Battery level</div>
                                             </div>
                                             <div className="bg-white rounded-lg p-3 text-center shadow-sm">
-                                                <div className={`text-lg font-bold ${batterySchedule.summary.net_benefit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                                    {batterySchedule.summary.net_benefit >= 0 ? '+' : ''}{batterySchedule.summary.net_benefit.toFixed(2)} SEK
+                                                <div className={`text-lg font-bold ${(batterySchedule.summary?.net_benefit || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                                    {(batterySchedule.summary?.net_benefit || 0) >= 0 ? '+' : ''}{(batterySchedule.summary?.net_benefit || 0).toFixed(2)} SEK
                                                 </div>
                                                 <div className="text-sm text-gray-600">Est. Daily Benefit</div>
                                                 <div className="text-xs text-gray-500">
-                                                    {(batterySchedule.summary.efficiency_utilized * 100).toFixed(0)}% efficiency
+                                                    {((batterySchedule.summary?.efficiency_utilized || 0) * 100).toFixed(0)}% efficiency
                                                 </div>
                                             </div>
                                         </div>

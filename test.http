@@ -1,0 +1,258 @@
+### Sigenergy API Test - Authentication & Battery Control
+###
+### 🛠️ SETUP REQUIRED:
+### 1. Select environment "local" in your HTTP client (credentials already configured)
+### 2. Run requests in order: Auth → System List → Onboard → Battery Commands
+###
+### 📋 Usage Instructions:
+### 1. Select environment "local" in your HTTP client (VS Code/IntelliJ dropdown)
+### 2. Run the "Authentication Request" first to get access token
+### 3. Run the "Get System List" to fetch and store your system ID automatically
+### 4. Run the "Onboard System" to grant control permissions (CRITICAL!)
+### 5. Use the Battery commands to control your solar system
+### 6. Use "Get System Energy Flow" to monitor current status
+###
+### 🌐 Environment Variables:
+### - SIGENERGY_BASE_URL: API base URL (default: https://api-eu.sigencloud.com)
+### - SIGENERGY_APP_KEY: Your Sigenergy App Key (from developer portal)
+### - SIGENERGY_APP_SECRET: Your Sigenergy App Secret (from developer portal)
+###
+### 🔐 Auto-Generated Variables (do not set manually):
+### - access_token: JWT token from authentication (expires in ~12 hours)
+### - system_id: First system ID from your account
+###
+### 🚨 TROUBLESHOOTING:
+### If you see "unsubstituted variable" errors:
+### - VS Code: Install "REST Client" extension + select environment in bottom status bar
+### - IntelliJ/PHPStorm: Select environment from dropdown near requests
+### - Other clients: Replace {{variables}} with actual values manually
+###
+### ⚠️ IMPORTANT: Run requests in this exact order:
+### 1. Authentication Request (to get access_token)
+### 2. Get System List (to get system_id)
+### 3. Onboard System (to grant control permissions)
+### 4. Then battery commands and monitoring
+
+
+### Authentication Request - Login with App Key/Secret to get access token
+POST {{SIGENERGY_BASE_URL}}/openapi/auth/login/key
+Content-Type: application/json
+Accept: application/json, text/plain, */*
+Cache-Control: no-cache
+Pragma: no-cache
+sigen-region: eu
+
+{
+  "key": "c2lnZW5lZHZxZTB4ZG11c2gyeXljOnl1YnVsdWV6c2FlaGJ0ODViNTRicHhtYmE5cmxiMzNq"
+}
+
+> {%
+  // Store the access token from authentication response
+  if (response.body && response.body.code === 0 && response.body.data) {
+    // Parse the data string to JSON object
+    const data = JSON.parse(response.body.data);
+
+    if (data && data.accessToken) {
+      client.global.set("access_token", data.accessToken);
+      console.log("✅ Authentication successful!");
+      console.log("📱 Access token stored:", data.accessToken.substring(0, 20) + "...");
+      console.log("⏰ Token expires in:", data.expiresIn, "seconds");
+      console.log("🔄 Next: Run 'Get System List' to fetch your system ID");
+    } else {
+      console.log("❌ Failed to parse token from data:", response.body.data);
+    }
+  } else {
+    console.log("❌ Authentication failed:");
+    console.log("   Status:", response.status);
+    console.log("   Code:", response.body.code);
+    console.log("   Message:", response.body.msg);
+    console.log("   Data:", response.body.data);
+  }
+%}
+
+###
+
+### Get System List - Fetch available systems and store first system ID
+### ⚠️  IMPORTANT: Run this after authentication to set system_id for other requests
+GET {{SIGENERGY_BASE_URL}}/openapi/system
+Content-Type: application/json
+Accept: application/json, text/plain, */*
+Authorization: Bearer {{access_token}}
+sigen-region: eu
+
+> {%
+  // Store the first system ID for subsequent requests
+  console.log('handling')
+  if (response.body.code === 0 && response.body.data) {
+    // Parse the data string to JSON array
+    const systems = JSON.parse(response.body.data);
+console.log('got data',systems)
+    if (systems && systems.length > 0) {
+      const firstSystem = systems[0];
+      client.global.set("system_id", firstSystem.systemId);
+      console.log("✅ Systems retrieved successfully!");
+      console.log("📋 Available systems:");
+      systems.forEach((system, index) => {
+        const marker = index === 0 ? "👉 " : "   ";
+        console.log(`${marker}${system.systemId}: ${system.systemName} (${system.status})`);
+        console.log(`   📍 ${system.addr || system.address || 'No address'}`);
+        console.log(`   🔋 Battery: ${system.batteryCapacity}kWh | ☀️ PV: ${system.pvCapacity}kW`);
+      });
+      console.log(`🎯 Using system: ${firstSystem.systemId} (${firstSystem.systemName})`);
+      console.log("🔄 Next: Use battery control commands below");
+    } else {
+      console.log("❌ No systems found in response");
+    }
+  } else {
+    console.log("❌ Failed to get systems:");
+    console.log("   Code:", response.body.code);
+    console.log("   Message:", response.body.msg);
+    console.log("   Data:", response.body.data);
+  }
+%}
+
+###
+
+### Onboard System - Grant control permissions (REQUIRED before battery commands)
+### ⚠️  CRITICAL: Run this after getting system list to enable battery control
+POST {{SIGENERGY_BASE_URL}}/openapi/board/onboard
+Content-Type: application/json
+Authorization: Bearer 2BVC58j-H3sWY22YPqFCicyu4mEuEtNG6J_xVg-XeEhgjrQQpCjL7kA0o99NyOkYkPTArwhuXg-CmyS7Q32iFGNxVaUo7E9jOJIDzOxMlPm-bdKlhQupUH8_qCbs7uX1
+
+["YUFYB1763464060"]
+
+> {%
+  // Display onboard result
+  if (response.body.code === 0) {
+    console.log("✅ System onboard successful!");
+    console.log("🔓 Battery control permissions granted");
+    console.log("🔄 Next: Use battery commands below");
+  } else {
+    console.log("❌ System onboard failed:");
+    console.log("   Code:", response.body.code);
+    console.log("   Message:", response.body.msg);
+    console.log("   ⚠️  Battery commands will NOT work without onboarding");
+  }
+%}
+
+###
+
+### Battery Charge Command - Send charge instruction to battery
+POST {{SIGENERGY_BASE_URL}}/openapi/instruction/command
+Content-Type: application/json
+Accept: application/json, text/plain, */*
+Cache-Control: no-cache
+Pragma: no-cache
+sigen-region: eu
+
+{
+  "accessToken": "{{access_token}}",
+  "commands": [
+    {
+      "systemId": "YUFYB1763464060",
+      "activeMode": "charge",
+      "startTime": {{$timestamp}},
+      "duration": 900,
+      "chargingPower": 3.0
+    }
+  ]
+}
+
+> {%
+  // Display the result of battery command
+  if (response.body.code === 0) {
+    console.log("Battery charge command successful!");
+  } else {
+    console.log("Battery command failed:", response.body.code, response.body.msg);
+  }
+%}
+
+###
+
+### Battery Discharge Command - Send discharge instruction to battery
+POST {{SIGENERGY_BASE_URL}}/openapi/instruction/command
+Content-Type: application/json
+Accept: application/json, text/plain, */*
+Cache-Control: no-cache
+Pragma: no-cache
+sigen-region: eu
+
+{
+  "accessToken": "{{access_token}}",
+  "commands": [
+    {
+      "systemId": "{{system_id}}",
+      "activeMode": "discharge",
+      "startTime": {{$timestamp}},
+      "duration": 900,
+      "dischargingPower": 3.0
+    }
+  ]
+}
+
+> {%
+  // Display the result of battery command
+  if (response.body.code === 0) {
+    console.log("Battery discharge command successful!");
+  } else {
+    console.log("Battery command failed:", response.body.code, response.body.msg);
+  }
+%}
+
+###
+
+### Battery Idle Command - Set battery to idle mode
+POST {{SIGENERGY_BASE_URL}}/openapi/instruction/command
+Content-Type: application/json
+Accept: application/json, text/plain, */*
+Cache-Control: no-cache
+Pragma: no-cache
+sigen-region: eu
+
+{
+  "accessToken": "{{access_token}}",
+  "commands": [
+    {
+      "systemId": "{{system_id}}",
+      "activeMode": "idle",
+      "startTime": {{$timestamp}}
+    }
+  ]
+}
+
+> {%
+  // Display the result of battery command
+  if (response.body.code === 0) {
+    console.log("Battery idle command successful!");
+  } else {
+    console.log("Battery command failed:", response.body.code, response.body.msg);
+  }
+%}
+
+###
+
+### Get System Energy Flow - Check current battery status
+GET {{SIGENERGY_BASE_URL}}/openapi/systems/{{system_id}}/energyFlow
+Content-Type: application/json
+Accept: application/json, text/plain, */*
+Authorization: Bearer {{access_token}}
+sigen-region: eu
+
+> {%
+  // Display current energy status
+  if (response.body.code === 0 && response.body.data) {
+    // Parse the data string to JSON object
+    const data = JSON.parse(response.body.data);
+    console.log("Current Energy Status:");
+    console.log(`- Battery SOC: ${data.batterySoc}%`);
+    console.log(`- Battery Power: ${data.batteryPower} kW`);
+    console.log(`- PV Power: ${data.pvPower} kW`);
+    console.log(`- Load Power: ${data.loadPower} kW`);
+    console.log(`- Grid Power: ${data.gridPower} kW`);
+  } else {
+    console.log("Failed to get energy flow:");
+    console.log("   Code:", response.body.code);
+    console.log("   Message:", response.body.msg);
+    console.log("   Data:", response.body.data);
+  }
+%}

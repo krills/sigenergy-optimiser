@@ -123,7 +123,7 @@ class VattenfallPriceService implements PriceProviderInterface
     /**
      * Get day-ahead prices for today
      */
-    public function getDayAheadPrices(Carbon $date = null): array
+    public function getDayAheadPrices(?Carbon $date = null): array
     {
         $date = $date ?? now();
         $cacheKey = 'vattenfall_day_ahead_' . $date->format('Y-m-d');

@@ -29,7 +29,7 @@ class BatteryPlanner
     /**
      * Generate a complete charge/discharge schedule for 15-minute intervals
      */
-    public function generateSchedule(array $intervalPrices, float $currentSOC, Carbon $startTime = null): array
+    public function generateSchedule(array $intervalPrices, float $currentSOC, ?Carbon $startTime = null): array
     {
         $startTime = $startTime ?? now();
 
@@ -131,34 +131,64 @@ class BatteryPlanner
             'std_dev' => $this->calculateStandardDeviation($prices)
         ];
 
-        // Identify charge and discharge windows based on price vs daily average
+        // New 3-tier pricing algorithm: Divide prices into thirds
+        $sortedPrices = $prices;
+        sort($sortedPrices);
+        $totalIntervals = count($sortedPrices);
+        
+        // Calculate thresholds for 3-tier system
+        $cheapestThird = $sortedPrices[intval($totalIntervals * 0.33)];  // 33rd percentile
+        $middleThird = $sortedPrices[intval($totalIntervals * 0.67)];    // 67th percentile
+        // Most expensive third starts above $middleThird
+        
+        // Identify charge and discharge windows based on 3-tier pricing
         $chargeWindows = [];
         $dischargeWindows = [];
 
         foreach ($intervals as $index => $interval) {
             $price = $interval['value'];
             $timestamp = Carbon::parse($interval['time_start']);
+            $hour = (int) $timestamp->format('H');
 
-            // Key algorithm: Compare each 15-minute price to daily average
-            if ($price < $stats['avg']) {
-                $chargeWindows[] = [
-                    'interval' => $index,
-                    'price' => $price,
-                    'start_time' => $timestamp,
-                    'end_time' => $timestamp->copy()->addMinutes(15),
-                    'savings' => $stats['avg'] - $price, // How much cheaper than average
-                    'priority' => $this->calculatePriority($price, $stats, 'charge')
-                ];
+            // Time-aware charging algorithm
+            $shouldCharge = false;
+            
+            if ($price <= $middleThird) {
+                $tier = $price <= $cheapestThird ? 'cheapest' : 'middle';
+                
+                // Time-based charging rules:
+                // 1. Always charge during cheapest third (any time of day)
+                // 2. Charge during middle third, but only before evening (18:00)
+                // 3. After 18:00, only charge if price is in cheapest third
+                if ($tier === 'cheapest') {
+                    $shouldCharge = true; // Always charge during cheapest prices
+                } elseif ($tier === 'middle' && $hour < 18) {
+                    $shouldCharge = true; // Middle tier charging only before 18:00
+                }
+                
+                if ($shouldCharge) {
+                    $chargeWindows[] = [
+                        'interval' => $index,
+                        'price' => $price,
+                        'start_time' => $timestamp,
+                        'end_time' => $timestamp->copy()->addMinutes(15),
+                        'savings' => $middleThird - $price,
+                        'tier' => $tier,
+                        'time_restricted' => ($tier === 'middle' && $hour >= 18),
+                        'priority' => $this->calculatePriority($price, $stats, 'charge')
+                    ];
+                }
             }
 
-            // Discharge when price is above average (can earn money)
-            if ($price > $stats['avg']) {
+            // Discharge only during most expensive third (33% of the day)
+            if ($price > $middleThird) {
                 $dischargeWindows[] = [
                     'interval' => $index,
                     'price' => $price,
                     'start_time' => $timestamp,
                     'end_time' => $timestamp->copy()->addMinutes(15),
-                    'earnings' => $price - $stats['avg'], // How much more expensive than average
+                    'earnings' => $price - $middleThird, // How much more expensive than middle tier
+                    'tier' => 'expensive',
                     'priority' => $this->calculatePriority($price, $stats, 'discharge')
                 ];
             }
@@ -175,7 +205,14 @@ class BatteryPlanner
             'total_intervals' => count($intervals),
             'charge_opportunities' => count($chargeWindows),
             'discharge_opportunities' => count($dischargeWindows),
-            'price_volatility' => $this->calculateVolatility($prices)
+            'price_volatility' => $this->calculateVolatility($prices),
+            'price_tiers' => [
+                'cheapest_threshold' => $cheapestThird,
+                'middle_threshold' => $middleThird,
+                'cheapest_tier' => [0, $cheapestThird],
+                'middle_tier' => [$cheapestThird, $middleThird],
+                'expensive_tier' => [$middleThird, $stats['max']]
+            ]
         ];
     }
 
@@ -211,7 +248,7 @@ class BatteryPlanner
                 'power' => $this->calculateIntervalPower($action),
                 'energy_change' => $this->calculateEnergyChange($action),
                 'target_soc' => $this->calculateTargetSOC($simulatedSOC, $action),
-                'reason' => $this->getActionReason($action, $price, $priceAnalysis['stats']['avg'])
+                'reason' => $this->getActionReason($action, $price, $priceAnalysis, $i)
             ];
 
             $schedule[] = $scheduleEntry;
@@ -228,7 +265,13 @@ class BatteryPlanner
      */
     private function determineIntervalAction(float $price, float $currentSOC, array $priceAnalysis, int $intervalIndex): string
     {
-        $averagePrice = $priceAnalysis['stats']['avg'];
+        // Get pricing tiers from analysis
+        $chargeWindows = $priceAnalysis['charge_windows'];
+        $dischargeWindows = $priceAnalysis['discharge_windows'];
+        
+        // Check if current interval is in charge or discharge windows
+        $inChargeWindow = collect($chargeWindows)->contains('interval', $intervalIndex);
+        $inDischargeWindow = collect($dischargeWindows)->contains('interval', $intervalIndex);
 
         // Safety checks first
         if ($currentSOC <= self::MIN_SOC) {
@@ -239,22 +282,23 @@ class BatteryPlanner
             return 'idle'; // Cannot charge more
         }
 
-        // Core algorithm: Compare price to daily average
-        if ($price < $averagePrice) {
-            // Price is cheaper than average - good time to charge
+        // New 3-tier algorithm: Charge during cheapest 2/3 of intervals
+        if ($inChargeWindow) {
+            // Price is in cheapest or middle tier - good time to charge
             if ($currentSOC < 85) { // Only charge if there's room
                 return 'charge';
             }
         }
 
-        if ($price > $averagePrice) {
-            // Price is more expensive than average - good time to discharge
+        // Discharge only during most expensive third
+        if ($inDischargeWindow) {
+            // Price is in most expensive tier - good time to discharge
             if ($currentSOC > 30) { // Only discharge if we have energy
                 return 'discharge';
             }
         }
 
-        // Price is close to average or SOC limits prevent action
+        // Price is not optimal or SOC limits prevent action
         return 'idle';
     }
 
@@ -312,22 +356,68 @@ class BatteryPlanner
     /**
      * Get human-readable reason for action
      */
-    private function getActionReason(string $action, float $price, float $averagePrice): string
+    private function getActionReason(string $action, float $price, array $priceAnalysis, int $intervalIndex): string
     {
-        $priceDiff = abs($price - $averagePrice);
-        $percentage = ($priceDiff / $averagePrice) * 100;
+        $stats = $priceAnalysis['stats'];
+        $chargeWindows = $priceAnalysis['charge_windows'];
+        $dischargeWindows = $priceAnalysis['discharge_windows'];
+        
+        // Find which tier this interval belongs to
+        $chargeWindow = collect($chargeWindows)->firstWhere('interval', $intervalIndex);
+        $dischargeWindow = collect($dischargeWindows)->firstWhere('interval', $intervalIndex);
+
+        // Get time context for reasoning
+        $interval = collect($priceAnalysis['charge_windows'] ?? [])->firstWhere('interval', $intervalIndex) 
+                 ?? collect($priceAnalysis['discharge_windows'] ?? [])->firstWhere('interval', $intervalIndex);
+        $hour = null;
+        if ($interval && isset($interval['start_time'])) {
+            $hour = (int) $interval['start_time']->format('H');
+        }
 
         switch ($action) {
             case 'charge':
-                return sprintf('Cheap price: %.3f SEK/kWh (%.1f%% below average %.3f)',
-                              $price, $percentage, $averagePrice);
+                if ($chargeWindow) {
+                    $tier = $chargeWindow['tier'];
+                    $savings = $chargeWindow['savings'];
+                    $tierDesc = $tier === 'cheapest' ? 'cheapest third' : 'middle third';
+                    
+                    if ($tier === 'cheapest') {
+                        return sprintf('Charging: %.3f SEK/kWh (%s tier, %.3f SEK savings)',
+                                      $price, $tierDesc, $savings);
+                    } else {
+                        $timeDesc = $hour !== null && $hour >= 18 ? ' (pre-evening)' : '';
+                        return sprintf('Charging: %.3f SEK/kWh (%s tier%s, %.3f SEK savings)',
+                                      $price, $tierDesc, $timeDesc, $savings);
+                    }
+                }
+                return sprintf('Emergency charge: %.3f SEK/kWh', $price);
             case 'discharge':
-                return sprintf('Expensive price: %.3f SEK/kWh (%.1f%% above average %.3f)',
-                              $price, $percentage, $averagePrice);
+                if ($dischargeWindow) {
+                    $earnings = $dischargeWindow['earnings'];
+                    return sprintf('Discharging: %.3f SEK/kWh (expensive tier, %.3f SEK premium)',
+                                  $price, $earnings);
+                }
+                return sprintf('Discharging: %.3f SEK/kWh', $price);
             case 'idle':
             default:
-                return sprintf('Price close to average: %.3f SEK/kWh (average %.3f)',
-                              $price, $averagePrice);
+                if ($chargeWindow) {
+                    return sprintf('Idle: %.3f SEK/kWh (charging tier but SOC limit reached)', $price);
+                } elseif ($dischargeWindow) {
+                    return sprintf('Idle: %.3f SEK/kWh (discharge tier but insufficient SOC)', $price);
+                } else {
+                    // Check if it's evening middle tier (time-restricted)
+                    $sortedPrices = array_column($priceAnalysis['charge_windows'] ?? [], 'price');
+                    $sortedPrices = array_merge($sortedPrices, array_column($priceAnalysis['discharge_windows'] ?? [], 'price'));
+                    sort($sortedPrices);
+                    $totalIntervals = count($sortedPrices);
+                    $cheapestThird = $sortedPrices[intval($totalIntervals * 0.33)] ?? 0;
+                    $middleThird = $sortedPrices[intval($totalIntervals * 0.67)] ?? 0;
+                    
+                    if ($price <= $middleThird && $price > $cheapestThird && $hour !== null && $hour >= 18) {
+                        return sprintf('Idle: %.3f SEK/kWh (middle tier but evening - only cheapest tier charges)', $price);
+                    }
+                    return sprintf('Idle: %.3f SEK/kWh (neutral tier)', $price);
+                }
         }
     }
 

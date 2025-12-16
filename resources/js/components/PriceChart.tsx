@@ -15,9 +15,18 @@ interface ChargeInterval {
   price: number; // Price at this interval
 }
 
+interface PriceTiers {
+  cheapest_threshold: number;
+  middle_threshold: number;
+  cheapest_tier: [number, number];
+  middle_tier: [number, number];
+  expensive_tier: [number, number];
+}
+
 interface PriceChartProps {
   prices: PriceData[];
   chargeIntervals?: ChargeInterval[];
+  priceTiers?: PriceTiers;
   loading?: boolean;
   error?: string;
   provider?: {
@@ -28,7 +37,7 @@ interface PriceChartProps {
   };
 }
 
-export default function PriceChart({ prices, chargeIntervals = [], loading = false, error, provider }: PriceChartProps) {
+export default function PriceChart({ prices, chargeIntervals = [], priceTiers, loading = false, error, provider }: PriceChartProps) {
   const chartRef = useRef<HighchartsReact.RefObject>(null);
 
   const chartOptions: Highcharts.Options = {
@@ -56,6 +65,10 @@ export default function PriceChart({ prices, chargeIntervals = [], loading = fal
       spacing: [10, 10, 15, 10]
     },
 
+    time: {
+      timezone: 'Europe/Stockholm'
+    },
+
     xAxis: {
       type: 'datetime',
       title: {
@@ -66,7 +79,25 @@ export default function PriceChart({ prices, chargeIntervals = [], loading = fal
         format: '{value:%H:%M}',
         style: { color: '#6b7280', fontSize: '11px' }
       },
-      gridLineColor: '#e5e7eb'
+      gridLineColor: '#e5e7eb',
+      plotLines: [{
+        value: Date.now(), // Current time in milliseconds
+        color: '#dc2626', // Red color for visibility
+        width: 2,
+        dashStyle: 'Dash',
+        label: {
+          text: 'Now',
+          style: {
+            color: '#dc2626',
+            fontSize: '11px',
+            fontWeight: 'bold'
+          },
+          align: 'center',
+          x: 0,
+          y: -5
+        },
+        zIndex: 5 // Make sure the line appears above other chart elements
+      }]
     },
 
     yAxis: [
@@ -81,26 +112,35 @@ export default function PriceChart({ prices, chargeIntervals = [], loading = fal
           style: { color: '#6b7280', fontSize: '11px' }
         },
         gridLineColor: '#e5e7eb',
-        plotBands: [
+        plotBands: priceTiers ? [
           {
-            from: 0,
-            to: 0.15,
-            color: 'rgba(34, 197, 94, 0.1)',
+            from: priceTiers.cheapest_tier[0],
+            to: priceTiers.cheapest_tier[1],
+            color: 'rgba(34, 197, 94, 0.15)',
             label: {
-              text: 'Cheap',
+              text: 'Cheapest Third',
               style: { color: '#22c55e', fontSize: '10px' }
             }
           },
           {
-            from: 1.5,
-            to: 10,
-            color: 'rgba(239, 68, 68, 0.1)', 
+            from: priceTiers.middle_tier[0],
+            to: priceTiers.middle_tier[1],
+            color: 'transparent',
             label: {
-              text: 'Expensive',
+              text: 'Middle Third',
+              style: { color: '#6b7280', fontSize: '10px' }
+            }
+          },
+          {
+            from: priceTiers.expensive_tier[0],
+            to: priceTiers.expensive_tier[1],
+            color: 'rgba(239, 68, 68, 0.15)',
+            label: {
+              text: 'Most Expensive Third',
               style: { color: '#ef4444', fontSize: '10px' }
             }
           }
-        ]
+        ] : []
       },
       {
         // Secondary y-axis for charging power
@@ -125,7 +165,16 @@ export default function PriceChart({ prices, chargeIntervals = [], loading = fal
         const points = this.points || [];
         if (points.length === 0) return '';
         
-        let tooltip = `<b>${Highcharts.dateFormat('%H:%M', points[0].x)}</b><br/>`;
+        const currentTime = Date.now();
+        const pointTime = points[0].x;
+        const timeDiff = Math.abs(currentTime - pointTime);
+        const isCurrentTime = timeDiff < (15 * 60 * 1000); // Within 15 minutes = current interval
+        
+        let tooltip = `<b>${Highcharts.dateFormat('%H:%M', pointTime)}</b>`;
+        if (isCurrentTime) {
+          tooltip += ` <span style="color: #dc2626; font-weight: bold;">⏰ NOW</span>`;
+        }
+        tooltip += '<br/>';
         
         points.forEach(point => {
           if (point.series.name === 'Electricity Price') {

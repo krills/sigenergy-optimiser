@@ -77,7 +77,7 @@ class ElectricityPriceAggregator
     /**
      * Get day-ahead prices using aggregation
      */
-    public function getDayAheadPrices(Carbon $date = null): array
+    public function getDayAheadPrices(?Carbon $date = null): array
     {
         $date = $date ?? now();
         $cacheKey = 'aggregated_day_ahead_' . $date->format('Y-m-d');
@@ -182,7 +182,7 @@ class ElectricityPriceAggregator
     /**
      * Get consensus price using voting mechanism
      */
-    private function getConsensusPrice(string $type, Carbon $date = null): float
+    private function getConsensusPrice(string $type, ?Carbon $date = null): float
     {
         $providerPrices = [];
         $providerWeights = [];
@@ -233,7 +233,7 @@ class ElectricityPriceAggregator
     /**
      * Get consensus price array for 24-hour data
      */
-    private function getConsensusPriceArray(string $type, Carbon $date = null): array
+    private function getConsensusPriceArray(string $type, ?Carbon $date = null): array
     {
         $providerDataSets = [];
         
@@ -272,7 +272,7 @@ class ElectricityPriceAggregator
     /**
      * Calculate price consensus from multiple provider prices
      */
-    private function calculatePriceConsensus(array $providers, array $weights = null): array
+    private function calculatePriceConsensus(array $providers, ?array $weights = null): array
     {
         if (empty($providers)) {
             return [

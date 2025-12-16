@@ -37,8 +37,14 @@ return [
 
     'sigenergy' => [
         'base_url' => env('SIGENERGY_BASE_URL', 'https://api-eu.sigencloud.com'),
-        'username' => env('SIGENERGY_USERNAME'),
-        'password' => env('SIGENERGY_PASSWORD'),
+        'app_key' => env('SIGENERGY_APP_KEY'),
+        'app_secret' => env('SIGENERGY_APP_SECRET'),
+        
+        // MQTT configuration for battery commands
+        'mqtt_server' => env('SIGENERGY_MQTT_SERVER'),
+        'mqtt_port' => env('SIGENERGY_MQTT_PORT', 1883),
+        'mqtt_username' => env('SIGENERGY_MQTT_USERNAME'),
+        'mqtt_password' => env('SIGENERGY_MQTT_PASSWORD'),
     ],
 
     'nordpool' => [
