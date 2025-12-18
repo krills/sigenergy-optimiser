@@ -28,11 +28,11 @@ Optimize an 8 kWh battery system in Stockholm using:
 - `ElectricityPriceAggregator`: Multi-provider price consensus
 - `SigenEnergyApiService`: API wrapper for battery control
 
-## Stockholm System
-- **System ID**: NDXZZ1731665796
+## System Configuration
 - **Location**: Stockholm, Sweden (SE3 pricing zone)
 - **Capacity**: 8 kWh battery + solar panels
 - **Grid**: Fortum (net metering)
+- **System ID**: Retrieved dynamically from Sigenergy API
 
 ## API Integration
 
@@ -289,7 +289,7 @@ This provides **surgical precision** for maximizing savings through intelligent 
 **Real-time Data Stream → Optimization Algorithm:**
 ```php
 // Subscribe to real-time data for continuous optimization
-$mqttClient->subscribe('realtime/NDXZZ1731665796/power', function($data) {
+$mqttClient->subscribe('realtime/[SYSTEM_ID]/power', function($data) {
     $batterySOC = $data['storageSOC%'];
     $gridPower = $data['gridActivePowerW'];
     $pvPower = $data['pvPowerW'];
@@ -304,7 +304,7 @@ $mqttClient->subscribe('realtime/NDXZZ1731665796/power', function($data) {
 });
 
 // Subscribe to alarms to pause optimization
-$mqttClient->subscribe('alarms/NDXZZ1731665796', function($alarm) {
+$mqttClient->subscribe('alarms/[SYSTEM_ID]', function($alarm) {
     if ($alarm['severity'] === 'critical') {
         $optimizationEngine->pauseOptimization($alarm['systemId']);
     }
@@ -365,6 +365,36 @@ php artisan battery:schedule
 
 # Test MQTT connectivity
 php artisan test:mqtt
+```
+
+### Production Commands
+```bash
+# Manual optimization (dry-run)
+php artisan send-instruction --dry-run
+
+# Force execution outside normal schedule
+php artisan send-instruction --force
+
+# Use specific system ID
+php artisan send-instruction --system-id=YOUR_SYSTEM_ID
+```
+
+### Automated Scheduling
+The BatteryControllerCommand includes built-in scheduling that runs every 15 minutes at quarter-hour intervals (00, 15, 30, 45 minutes past each hour).
+
+**Activation**: Ensure Laravel's scheduler is running via system cron:
+```bash
+# Add to crontab: crontab -e
+* * * * * cd /path/to/solapp && php artisan schedule:run >> /dev/null 2>&1
+```
+
+**Manual override**:
+```bash
+# Force execution outside normal schedule
+php artisan send-instruction --force
+
+# Test with dry-run
+php artisan send-instruction --dry-run
 ```
 
 ### Dashboard Features

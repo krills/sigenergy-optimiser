@@ -8,23 +8,20 @@ use Illuminate\Support\Facades\Log;
 class BatteryPlanner
 {
     // Configuration constants
-    private const MIN_SOC = 10; // Never discharge below 20%
-    private const MAX_SOC = 95; // Never charge above 95%
-    private const BATTERY_CAPACITY = 8.0; // kWh (8kWh system)
-    private const MAX_CHARGE_POWER = 3.0; // kW (per 15-minute interval: 0.75 kWh)
-    private const MAX_DISCHARGE_POWER = 3.0; // kW (per 15-minute interval: 0.75 kWh)
-    private const ROUND_TRIP_EFFICIENCY = 0.93; // 93% efficiency
+    private const int MIN_SOC = 10; // Never discharge below 20%
+    private const int MAX_SOC = 95; // Never charge above 95%
+    private const float BATTERY_CAPACITY = 8.0; // kWh (8kWh system)
+    private const float MAX_CHARGING_POWER = 3.0; // kW (per 15-minute interval: 0.75 kWh)
+    private const float MAX_DISCHARGE_POWER = 3.0; // kW (per 15-minute interval: 0.75 kWh)
+    private const float ROUND_TRIP_EFFICIENCY = 0.93; // 93% efficiency
 
     // 15-minute interval constants
-    private const INTERVAL_DURATION = 15; // minutes
-    private const INTERVALS_PER_HOUR = 4;
-    private const INTERVALS_PER_DAY = 96;
-    private const ENERGY_PER_INTERVAL = 0.75; // kWh (3kW * 0.25 hours)
+    private const int INTERVAL_DURATION = 15; // minutes
+    private const float ENERGY_PER_INTERVAL = 0.75; // kWh (3kW * 0.25 hours)
 
     // Planning parameters
-    private const PLANNING_HORIZON_INTERVALS = 192; // 48 hours (2 days)
-    private const MIN_SESSION_INTERVALS = 4; // Minimum 1 hour sessions (4 x 15min)
-    private const MAX_DAILY_CYCLES = 2; // Maximum 2 charge/discharge cycles per day
+    private const int PLANNING_HORIZON_INTERVALS = 192; // 48 hours (2 days)
+    private const float DESIRED_MAX_GRID_CONSUMPTION_KWH = 5.0;
 
     /**
      * Generate a complete charge/discharge schedule for 15-minute intervals
@@ -97,12 +94,15 @@ class BatteryPlanner
         // Calculate net load (positive = need power, negative = excess power)
         $netLoad = $currentLoadPower - $currentSolarPower;
 
+        // Calculate current grid consumption (positive = importing, negative = exporting)
+        $currentGridConsumption = $netLoad; // This is what we're currently drawing from/feeding to grid
         // Make decision based on multiple factors
         $decision = $this->calculateImmediateAction(
             $currentSOC,
             $currentPrice,
             $netLoad,
-            $priceContext
+            $priceContext,
+            $currentGridConsumption
         );
 
         Log::info('BatteryPlanner: Immediate decision made', [
@@ -135,12 +135,12 @@ class BatteryPlanner
         $sortedPrices = $prices;
         sort($sortedPrices);
         $totalIntervals = count($sortedPrices);
-        
+
         // Calculate thresholds for 3-tier system
         $cheapestThird = $sortedPrices[intval($totalIntervals * 0.33)];  // 33rd percentile
         $middleThird = $sortedPrices[intval($totalIntervals * 0.67)];    // 67th percentile
         // Most expensive third starts above $middleThird
-        
+
         // Identify charge and discharge windows based on 3-tier pricing
         $chargeWindows = [];
         $dischargeWindows = [];
@@ -152,10 +152,10 @@ class BatteryPlanner
 
             // Time-aware charging algorithm
             $shouldCharge = false;
-            
+
             if ($price <= $middleThird) {
                 $tier = $price <= $cheapestThird ? 'cheapest' : 'middle';
-                
+
                 // Time-based charging rules:
                 // 1. Always charge during cheapest third (any time of day)
                 // 2. Charge during middle third, but only before evening (18:00)
@@ -165,7 +165,7 @@ class BatteryPlanner
                 } elseif ($tier === 'middle' && $hour < 18) {
                     $shouldCharge = true; // Middle tier charging only before 18:00
                 }
-                
+
                 if ($shouldCharge) {
                     $chargeWindows[] = [
                         'interval' => $index,
@@ -268,7 +268,7 @@ class BatteryPlanner
         // Get pricing tiers from analysis
         $chargeWindows = $priceAnalysis['charge_windows'];
         $dischargeWindows = $priceAnalysis['discharge_windows'];
-        
+
         // Check if current interval is in charge or discharge windows
         $inChargeWindow = collect($chargeWindows)->contains('interval', $intervalIndex);
         $inDischargeWindow = collect($dischargeWindows)->contains('interval', $intervalIndex);
@@ -309,7 +309,7 @@ class BatteryPlanner
     {
         switch ($action) {
             case 'charge':
-                return self::MAX_CHARGE_POWER;
+                return self::MAX_CHARGING_POWER;
             case 'discharge':
                 return self::MAX_DISCHARGE_POWER;
             case 'idle':
@@ -361,13 +361,13 @@ class BatteryPlanner
         $stats = $priceAnalysis['stats'];
         $chargeWindows = $priceAnalysis['charge_windows'];
         $dischargeWindows = $priceAnalysis['discharge_windows'];
-        
+
         // Find which tier this interval belongs to
         $chargeWindow = collect($chargeWindows)->firstWhere('interval', $intervalIndex);
         $dischargeWindow = collect($dischargeWindows)->firstWhere('interval', $intervalIndex);
 
         // Get time context for reasoning
-        $interval = collect($priceAnalysis['charge_windows'] ?? [])->firstWhere('interval', $intervalIndex) 
+        $interval = collect($priceAnalysis['charge_windows'] ?? [])->firstWhere('interval', $intervalIndex)
                  ?? collect($priceAnalysis['discharge_windows'] ?? [])->firstWhere('interval', $intervalIndex);
         $hour = null;
         if ($interval && isset($interval['start_time'])) {
@@ -380,7 +380,7 @@ class BatteryPlanner
                     $tier = $chargeWindow['tier'];
                     $savings = $chargeWindow['savings'];
                     $tierDesc = $tier === 'cheapest' ? 'cheapest third' : 'middle third';
-                    
+
                     if ($tier === 'cheapest') {
                         return sprintf('Charging: %.3f SEK/kWh (%s tier, %.3f SEK savings)',
                                       $price, $tierDesc, $savings);
@@ -412,7 +412,7 @@ class BatteryPlanner
                     $totalIntervals = count($sortedPrices);
                     $cheapestThird = $sortedPrices[intval($totalIntervals * 0.33)] ?? 0;
                     $middleThird = $sortedPrices[intval($totalIntervals * 0.67)] ?? 0;
-                    
+
                     if ($price <= $middleThird && $price > $cheapestThird && $hour !== null && $hour >= 18) {
                         return sprintf('Idle: %.3f SEK/kWh (middle tier but evening - only cheapest tier charges)', $price);
                     }
@@ -438,7 +438,8 @@ class BatteryPlanner
         float $currentSOC,
         float $currentPrice,
         float $netLoad,
-        array $priceContext
+        array $priceContext,
+        float $currentGridConsumption
     ): array {
 
         // Default action
@@ -451,26 +452,49 @@ class BatteryPlanner
         ];
 
         // Emergency situations first
-        if ($currentSOC <= self::MIN_SOC) {
+        if ($currentSOC < self::MIN_SOC) {
             return [
                 'action' => 'charge',
-                'power' => self::MAX_CHARGE_POWER,
+                'power' => $this->optimalChargePower($currentGridConsumption),
                 'duration' => 15,
-                'reason' => 'Emergency charge - SOC critically low',
+                'reason' => sprintf('Emergency charge - SOC critically low (targeting %.1fkW grid load)', self::MAX_CHARGING_POWER),
                 'confidence' => 'high'
             ];
         }
 
         if ($currentSOC >= self::MAX_SOC) {
-            if ($netLoad > 0) {
+            // Only discharge if price is favorable or we're past evening peaks
+            $currentHour = now()->hour;
+            $isEvening = $currentHour >= 20; // After 8 PM, second peak has passed
+            $avgPrice = $priceContext['average_price'] ?? 0.50;
+            $isExpensivePeriod = $currentPrice > $avgPrice * 1.1; // 10% above average
+            $isMiddlePricePeriod = $currentPrice >= $avgPrice * 0.9 && $currentPrice <= $avgPrice * 1.1;
+
+            // Discharge conditions:
+            // 1. Expensive period (always discharge to avoid buying expensive grid power)
+            // 2. Evening + middle price period (second peak passed, safe to discharge)
+            // 3. High load demand regardless of price
+            if ($isExpensivePeriod || ($isEvening && $isMiddlePricePeriod) || $netLoad > 2.0) {
+                $reason = $isExpensivePeriod ? 'SOC full, expensive period' :
+                         ($isEvening && $isMiddlePricePeriod ? 'SOC full, evening middle price' : 'SOC full, high load demand');
+
                 return [
                     'action' => 'discharge',
-                    'power' => min(self::MAX_DISCHARGE_POWER, $netLoad),
+                    'power' => min(self::MAX_DISCHARGE_POWER, max($netLoad, 1.0)),
                     'duration' => 15,
-                    'reason' => 'SOC full, provide load power',
+                    'reason' => $reason,
                     'confidence' => 'high'
                 ];
             }
+
+            // In cheap periods (lower 2/3), conserve energy for next peak
+            return [
+                'action' => 'idle',
+                'power' => 0,
+                'duration' => 15,
+                'reason' => 'SOC full, conserving for next price peak',
+                'confidence' => 'medium'
+            ];
         }
 
         // Price-based decisions for 15-minute intervals
@@ -479,10 +503,10 @@ class BatteryPlanner
         if ($currentPrice < $avgPrice * 0.8 && $currentSOC < 80) {
             return [
                 'action' => 'charge',
-                'power' => self::MAX_CHARGE_POWER,
+                'power' => $this->optimalChargePower($currentGridConsumption),
                 'duration' => 15,
-                'reason' => sprintf("Very cheap price: %.3f SEK/kWh (%.1f%% below average)",
-                                  $currentPrice, (($avgPrice - $currentPrice) / $avgPrice) * 100),
+                'reason' => sprintf("Very cheap price: %.3f SEK/kWh (%.1f%% below average, targeting %.1fkW grid load)",
+                                  $currentPrice, (($avgPrice - $currentPrice) / $avgPrice) * 100, self::MAX_CHARGING_POWER),
                 'confidence' => 'high'
             ];
         }
@@ -496,29 +520,6 @@ class BatteryPlanner
                                   $currentPrice, (($currentPrice - $avgPrice) / $avgPrice) * 100),
                 'confidence' => 'high'
             ];
-        }
-
-        // Load balancing for 15-minute interval
-        if (abs($netLoad) > 1.0) {
-            if ($netLoad > 0 && $currentSOC > 25) {
-                return [
-                    'action' => 'discharge',
-                    'power' => min(self::MAX_DISCHARGE_POWER, $netLoad),
-                    'duration' => 15,
-                    'reason' => 'Provide load balancing power',
-                    'confidence' => 'medium'
-                ];
-            }
-
-            if ($netLoad < -1.0 && $currentSOC < 85) {
-                return [
-                    'action' => 'charge',
-                    'power' => min(self::MAX_CHARGE_POWER, abs($netLoad)),
-                    'duration' => 15,
-                    'reason' => 'Absorb excess solar power',
-                    'confidence' => 'medium'
-                ];
-            }
         }
 
         return $action;
@@ -696,5 +697,10 @@ class BatteryPlanner
             'starting_soc' => $currentSOC,
             'efficiency_utilized' => self::ROUND_TRIP_EFFICIENCY
         ];
+    }
+
+    private function optimalChargePower(float $currentGridConsumption)
+    {
+        return min(self::MAX_CHARGING_POWER, self::DESIRED_MAX_GRID_CONSUMPTION_KWH - $currentGridConsumption);
     }
 }

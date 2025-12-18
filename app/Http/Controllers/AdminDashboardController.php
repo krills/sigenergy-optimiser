@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Services\SigenEnergyApiService;
 use App\Contracts\PriceProviderInterface;
 use App\Services\BatteryPlanner;
+use App\Models\BatteryHistory;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -78,6 +79,9 @@ class AdminDashboardController extends Controller
         // Get battery optimization schedule
         $batterySchedule = $this->getBatteryOptimizationSchedule($pricesData);
 
+        // Get battery history for today's visualization
+        $batteryHistory = $this->getTodaysBatteryHistory($systemsData['systems'] ?? []);
+
         // Get current battery mode from Sigenergy API
         $currentBatteryMode = $this->getCurrentBatteryMode($systemsData['systems'] ?? []);
 
@@ -92,6 +96,7 @@ class AdminDashboardController extends Controller
             ],
             'electricityPrices' => $pricesData,
             'batterySchedule' => $batterySchedule,
+            'batteryHistory' => $batteryHistory,
             'currentBatteryMode' => $currentBatteryMode
         ]);
     }
@@ -454,8 +459,23 @@ class AdminDashboardController extends Controller
         Log::info('Generating battery optimization schedule');
 
         try {
-            // Assume current SOC of 50% for planning (in real implementation, get from Sigenergy API)
-            $currentSOC = 50.0;
+            // Get real current SOC from Sigenergy API
+            $currentSOC = $this->getCurrentSOCFromSystems($pricesData);
+            
+            // If SOC is unknown, we cannot generate a meaningful schedule
+            if ($currentSOC === null) {
+                Log::warning('Cannot generate battery optimization schedule - SOC unknown');
+                return [
+                    'schedule' => [],
+                    'chargeIntervals' => [],
+                    'analysis' => null,
+                    'summary' => [
+                        'note' => 'Battery SOC unknown - cannot generate optimization schedule'
+                    ],
+                    'current_soc' => null,
+                    'error' => 'Battery SOC unknown'
+                ];
+            }
 
             // Convert price data to format expected by BatteryPlanner
             $intervalPrices = [];
@@ -529,34 +549,67 @@ class AdminDashboardController extends Controller
     }
 
     /**
+     * Get current SOC from first available system
+     */
+    private function getCurrentSOCFromSystems(array $pricesData): ?float
+    {
+        try {
+            // Get systems data
+            $systemsData = $this->getCachedSystemsAndDevices();
+            $systems = $systemsData['systems'] ?? [];
+
+            if (empty($systems)) {
+                Log::warning('No systems available for SOC reading');
+                return null;
+            }
+
+            // Use the first system
+            $system = $systems[0];
+            $systemId = $system['systemId'];
+
+            // Get energy flow data
+            $energyFlow = $this->sigenEnergyApi->getSystemEnergyFlow($systemId);
+
+            if ($energyFlow === null || !isset($energyFlow['batterySoc'])) {
+                Log::warning('Could not get SOC from Sigenergy API');
+                return null;
+            }
+
+            $currentSOC = (float) $energyFlow['batterySoc'];
+            Log::info('Current SOC fetched from Sigenergy API', ['soc' => $currentSOC]);
+            
+            return $currentSOC;
+
+        } catch (\Exception $e) {
+            Log::error('Error fetching current SOC from Sigenergy API', [
+                'error' => $e->getMessage()
+            ]);
+            return null;
+        }
+    }
+
+    /**
      * Get current battery mode from Sigenergy API
      */
     private function getCurrentBatteryMode(array $systems): array
     {
-        // Stockholm system ID
-        $stockholmSystemId = 'NDXZZ1731665796';
-        
         try {
-            // Find Stockholm system in the systems data
-            $stockholmSystem = null;
-            foreach ($systems as $system) {
-                if ($system['systemId'] === $stockholmSystemId) {
-                    $stockholmSystem = $system;
-                    break;
-                }
-            }
-
-            if (!$stockholmSystem) {
+            // If no systems available, return idle state
+            if (empty($systems)) {
                 return [
                     'mode' => 'unknown',
                     'status' => 'error',
-                    'error' => 'Stockholm system not found'
+                    'error' => 'No systems available'
                 ];
             }
 
+            // Use the first system (assuming single system setup)
+            $system = $systems[0];
+            $systemId = $system['systemId'];
+
             // Get energy flow data to determine current mode
-            $energyFlow = $this->sigenEnergyApi->getSystemEnergyFlow($stockholmSystemId);
-            
+            $energyFlow = $this->sigenEnergyApi->getSystemEnergyFlow($systemId);
+
             if ($energyFlow === null) {
                 return [
                     'mode' => 'unknown',
@@ -568,15 +621,15 @@ class AdminDashboardController extends Controller
             // Determine mode based on battery power
             $batteryPower = $energyFlow['batteryPower'] ?? 0;
             $batterySoc = $energyFlow['batterySoc'] ?? null;
-            
+
             $mode = 'idle';
             $power_kw = 0;
-            
+
             if ($batteryPower > 0.1) {
                 $mode = 'charge';
                 $power_kw = $batteryPower;
             } elseif ($batteryPower < -0.1) {
-                $mode = 'discharge'; 
+                $mode = 'discharge';
                 $power_kw = abs($batteryPower);
             }
 
@@ -586,18 +639,94 @@ class AdminDashboardController extends Controller
                 'power_kw' => $power_kw > 0 ? $power_kw : null,
                 'battery_soc' => $batterySoc,
                 'battery_power' => $batteryPower,
+                'system_id' => $systemId,
+                'system_name' => $system['systemName'] ?? 'Unknown System',
                 'last_updated' => now()->toISOString()
             ];
 
         } catch (\Exception $e) {
             Log::error('Error fetching current battery mode from Sigenergy API', [
-                'error' => $e->getMessage(),
-                'system_id' => $stockholmSystemId
+                'error' => $e->getMessage()
             ]);
-            
+
             return [
                 'mode' => 'unknown',
                 'status' => 'error',
+                'error' => $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Get today's battery history for dashboard visualization
+     */
+    private function getTodaysBatteryHistory(array $systems): array
+    {
+        try {
+            // If no systems available, return empty data
+            if (empty($systems)) {
+                return [
+                    'soc_history' => [],
+                    'charge_history' => [],
+                    'error' => 'No systems available'
+                ];
+            }
+
+            // Use the first system (assuming single system setup)
+            $system = $systems[0];
+            $systemId = $system['systemId'];
+
+            // Get today's battery history from database
+            $today = Carbon::today();
+            $historyRecords = BatteryHistory::forSystem($systemId)
+                ->forDate($today)
+                ->orderBy('interval_start')
+                ->get();
+
+            // Convert to format suitable for charts
+            $socHistory = [];
+            $chargeHistory = [];
+
+            foreach ($historyRecords as $record) {
+                $timestamp = $record->interval_start->timestamp * 1000; // Convert to milliseconds for charts
+
+                // Add SOC data point
+                if ($record->soc_start !== null) {
+                    $socHistory[] = [
+                        'timestamp' => $timestamp,
+                        'soc' => (float) $record->soc_start,
+                        'interval_start' => $record->interval_start->toISOString()
+                    ];
+                }
+
+                // Add charging data point if this was a charge interval
+                if ($record->action === 'charge' && $record->power_kw > 0) {
+                    $chargeHistory[] = [
+                        'timestamp' => $timestamp,
+                        'power' => (float) $record->power_kw,
+                        'price' => (float) $record->price_sek_kwh,
+                        'decision_source' => $record->decision_source,
+                        'interval_start' => $record->interval_start->toISOString(),
+                    ];
+                }
+            }
+
+            return [
+                'soc_history' => $socHistory,
+                'charge_history' => $chargeHistory,
+                'total_intervals' => $historyRecords->count(),
+                'charge_intervals' => $historyRecords->where('action', 'charge')->count(),
+                'last_updated' => now()->toISOString()
+            ];
+
+        } catch (\Exception $e) {
+            Log::error('Error fetching battery history', [
+                'error' => $e->getMessage()
+            ]);
+
+            return [
+                'soc_history' => [],
+                'charge_history' => [],
                 'error' => $e->getMessage()
             ];
         }

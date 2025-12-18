@@ -23,9 +23,29 @@ interface PriceTiers {
   expensive_tier: [number, number];
 }
 
+interface BatteryHistory {
+  soc_history: Array<{
+    timestamp: number;
+    soc: number;
+    interval_start: string;
+  }>;
+  charge_history: Array<{
+    timestamp: number;
+    power: number;
+    price: number;
+    decision_source: string;
+    interval_start: string;
+  }>;
+  total_intervals: number;
+  charge_intervals: number;
+  last_updated: string;
+  error?: string;
+}
+
 interface PriceChartProps {
   prices: PriceData[];
   chargeIntervals?: ChargeInterval[];
+  batteryHistory?: BatteryHistory;
   priceTiers?: PriceTiers;
   loading?: boolean;
   error?: string;
@@ -37,7 +57,7 @@ interface PriceChartProps {
   };
 }
 
-export default function PriceChart({ prices, chargeIntervals = [], priceTiers, loading = false, error, provider }: PriceChartProps) {
+export default function PriceChart({ prices, chargeIntervals = [], batteryHistory, priceTiers, loading = false, error, provider }: PriceChartProps) {
   const chartRef = useRef<HighchartsReact.RefObject>(null);
 
   const chartOptions: Highcharts.Options = {
@@ -49,7 +69,7 @@ export default function PriceChart({ prices, chargeIntervals = [], priceTiers, l
         color: '#1f2937'
       }
     },
-    
+
     subtitle: {
       text: provider?.description || 'Electricity prices with 15-minute intervals - Today',
       style: {
@@ -156,6 +176,22 @@ export default function PriceChart({ prices, chargeIntervals = [], priceTiers, l
         gridLineWidth: 0,
         min: 0,
         max: 5 // Typical max charging power
+      },
+      {
+        // Third y-axis for SOC percentage
+        title: {
+          text: 'SOC (%)',
+          style: { color: '#f59e0b', fontSize: '12px' }
+        },
+        labels: {
+          format: '{value}%',
+          style: { color: '#f59e0b', fontSize: '11px' }
+        },
+        opposite: false,
+        gridLineWidth: 0,
+        min: 0,
+        max: 100,
+        offset: 50 // Offset from left side to avoid collision with price axis
       }
     ],
 
@@ -164,31 +200,35 @@ export default function PriceChart({ prices, chargeIntervals = [], priceTiers, l
       formatter: function() {
         const points = this.points || [];
         if (points.length === 0) return '';
-        
+
         const currentTime = Date.now();
         const pointTime = points[0].x;
         const timeDiff = Math.abs(currentTime - pointTime);
         const isCurrentTime = timeDiff < (15 * 60 * 1000); // Within 15 minutes = current interval
-        
+
         let tooltip = `<b>${Highcharts.dateFormat('%H:%M', pointTime)}</b>`;
         if (isCurrentTime) {
           tooltip += ` <span style="color: #dc2626; font-weight: bold;">⏰ NOW</span>`;
         }
         tooltip += '<br/>';
-        
+
         points.forEach(point => {
           if (point.series.name === 'Electricity Price') {
             tooltip += `Price: <b>${point.y?.toFixed(3)} SEK/kWh</b><br/>`;
             tooltip += `<span style="color: ${point.y! < 0.15 ? '#22c55e' : point.y! > 1.5 ? '#ef4444' : '#f59e0b'}">
-              ${point.y! < 0.15 ? '🟢 Cheap - Good for charging' : 
-                point.y! > 1.5 ? '🔴 Expensive - Use battery' : 
+              ${point.y! < 0.15 ? '🟢 Cheap - Good for charging' :
+                point.y! > 1.5 ? '🔴 Expensive - Use battery' :
                 '🟡 Medium price'}
             </span><br/>`;
           } else if (point.series.name === 'Battery Charging') {
-            tooltip += `<span style="color: #3b82f6">🔋 Charging: <b>${point.y?.toFixed(1)} kW</b></span><br/>`;
+            tooltip += `<span style="color: #3b82f6">🔋 Planned Charging: <b>${point.y?.toFixed(1)} kW</b></span><br/>`;
+          } else if (point.series.name === 'Actual Charging') {
+            tooltip += `<span style="color: #22c55e">🔋 Actually Charged: <b>${point.y?.toFixed(1)} kW</b></span><br/>`;
+          } else if (point.series.name === 'Battery SOC') {
+            tooltip += `<span style="color: #f59e0b">⚡ SOC: <b>${point.y?.toFixed(1)}%</b></span><br/>`;
           }
         });
-        
+
         return tooltip;
       },
       backgroundColor: 'rgba(255, 255, 255, 0.95)',
@@ -198,7 +238,7 @@ export default function PriceChart({ prices, chargeIntervals = [], priceTiers, l
     },
 
     legend: {
-      enabled: chargeIntervals.length > 0,
+      enabled: chargeIntervals.length > 0 || (batteryHistory?.soc_history?.length ?? 0) > 0,
       layout: 'horizontal',
       align: 'center',
       verticalAlign: 'bottom',
@@ -245,7 +285,7 @@ export default function PriceChart({ prices, chargeIntervals = [], priceTiers, l
             color: '#22c55e' // Green for cheap prices
           },
           {
-            value: 1.5, 
+            value: 1.5,
             color: '#f59e0b' // Orange for medium prices
           },
           {
@@ -253,18 +293,55 @@ export default function PriceChart({ prices, chargeIntervals = [], priceTiers, l
           }
         ]
       },
+      // SOC curve - always show if we have data
+      ...((batteryHistory?.soc_history?.length ?? 0) > 0 ? [{
+        type: 'line' as const,
+        name: 'Battery SOC',
+        data: batteryHistory!.soc_history.map(soc => [
+          soc.timestamp, // Already in milliseconds
+          soc.soc
+        ]),
+        color: '#f59e0b',
+        yAxis: 2, // Use third y-axis for SOC percentage
+        lineWidth: 3,
+        marker: {
+          enabled: true,
+          radius: 4,
+          symbol: 'circle'
+        },
+        tooltip: {
+          valueSuffix: '%'
+        }
+      }] : []),
+      // Planned charging intervals (blue with lower opacity)
       ...(chargeIntervals.length > 0 ? [{
         type: 'column' as const,
-        name: 'Battery Charging',
+        name: 'Planned Charging',
         data: chargeIntervals.map(interval => [
           interval.timestamp, // Already in milliseconds
           interval.power
         ]),
-        color: 'rgba(59, 130, 246, 0.6)', // Blue with transparency
+        color: 'rgba(59, 130, 246, 0.4)', // Blue with lower transparency for planned
         yAxis: 1, // Use secondary y-axis for power
         tooltip: {
           valueSuffix: ' kW'
-        }
+        },
+        zIndex: 1 // Lower z-index so actual charging appears on top
+      }] : []),
+      // Actual charging intervals (greener color with higher opacity)
+      ...((batteryHistory?.charge_history?.length ?? 0) > 0 ? [{
+        type: 'column' as const,
+        name: 'Actual Charging',
+        data: batteryHistory!.charge_history.map(charge => [
+          charge.timestamp, // Already in milliseconds
+          charge.power
+        ]),
+        color: 'rgba(34, 197, 94, 0.8)', // Green with higher opacity for actual
+        yAxis: 1, // Use secondary y-axis for power
+        tooltip: {
+          valueSuffix: ' kW'
+        },
+        zIndex: 2 // Higher z-index so it appears on top of planned charging
       }] : [])
     ],
 
@@ -338,7 +415,7 @@ export default function PriceChart({ prices, chargeIntervals = [], priceTiers, l
         highcharts={Highcharts}
         options={chartOptions}
       />
-      
+
       {/* Price Summary */}
       <div className="mt-4 grid grid-cols-3 gap-4 text-sm">
         <div className="text-center">

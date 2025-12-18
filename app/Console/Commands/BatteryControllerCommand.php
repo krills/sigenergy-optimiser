@@ -6,7 +6,6 @@ use App\Services\BatteryPlanner;
 use App\Contracts\PriceProviderInterface;
 use App\Services\SigenEnergyApiService;
 use App\Models\BatteryHistory;
-use App\Models\BatterySession;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
@@ -20,10 +19,8 @@ class BatteryControllerCommand extends Command
 
     protected $description = 'Execute battery optimization every 15 minutes (production controller)';
 
-    // Stockholm system constants
-    private const STOCKHOLM_SYSTEM_ID = 'NDXZZ1731665796';
-    private const BATTERY_CAPACITY_KWH = 8.0;
-    private const ROUND_TRIP_EFFICIENCY = 0.93;
+    // System constants
+    private const float BATTERY_CAPACITY_KWH = 8.0;
 
     private BatteryPlanner $planner;
     private PriceProviderInterface $priceApi;
@@ -103,22 +100,6 @@ class BatteryControllerCommand extends Command
                 $isDryRun
             );
 
-            // 7. Update active sessions (track decisions even in dry-run mode)
-            Log::info('About to call updateActiveSessions', [
-                'system_id' => $systemId,
-                'decision_action' => $plannerDecision['action']
-            ]);
-
-            try {
-                $this->updateActiveSessions($systemId, $systemState, $plannerDecision, $currentPrice);
-            } catch (\Exception $e) {
-                Log::error('Session management failed', [
-                    'error' => $e->getMessage(),
-                    'trace' => $e->getTraceAsString()
-                ]);
-                // Don't fail the entire command due to session issues
-            }
-
             // 8. Display results
             $this->displayResults($historyRecord, $executionResult, $isDryRun, $systemId);
 
@@ -131,7 +112,9 @@ class BatteryControllerCommand extends Command
                 'trace' => $e->getTraceAsString()
             ]);
 
+
             $this->error('❌ Battery controller failed: ' . $e->getMessage());
+            $this->error( $e->getTraceAsString());
             return 1;
         }
     }
@@ -151,8 +134,7 @@ class BatteryControllerCommand extends Command
             $systems = $this->sigenApi->getSystemList();
 
             if (empty($systems)) {
-                $this->warn('⚠️  No systems found via Sigenergy API, using fallback');
-                return self::STOCKHOLM_SYSTEM_ID;
+                throw new \Exception('No systems found via Sigenergy API. Please specify --system-id option.');
             }
 
             // Use the first system found
@@ -164,12 +146,11 @@ class BatteryControllerCommand extends Command
             return $systemId;
 
         } catch (\Exception $e) {
-            Log::warning('Failed to retrieve systems from Sigenergy API, using fallback', [
+            Log::error('Failed to retrieve system ID', [
                 'error' => $e->getMessage()
             ]);
 
-            $this->warn('⚠️  Sigenergy API unavailable, using fallback system ID');
-            return self::STOCKHOLM_SYSTEM_ID;
+            throw new \Exception('Cannot determine system ID. Either provide --system-id option or ensure Sigenergy API is accessible: ' . $e->getMessage());
         }
     }
 
@@ -358,32 +339,21 @@ class BatteryControllerCommand extends Command
     ): BatteryHistory {
         $now = now();
         $intervalStart = $now->copy()->startOfHour()->addMinutes(floor($now->minute / 15) * 15);
-        $intervalEnd = $intervalStart->copy()->addMinutes(15);
-
-        // Calculate energy for this interval
-        $energyKwh = 0;
-        if (in_array($decision['action'], ['charge', 'discharge'])) {
-            $energyKwh = ($decision['power'] ?? 3.0) * 0.25; // 15 minutes = 0.25 hours
-        }
 
         // Determine price tier
         $priceTier = $this->determinePriceTier($currentPrice, $allPrices);
         $dailyAvgPrice = array_sum(array_column($allPrices, 'value')) / count($allPrices);
 
         // Calculate current charge cost (this is the key addition)
-        $chargeTracking = $this->calculateCurrentChargeMetrics($systemId, $systemState['current_soc'], $decision, $currentPrice, $energyKwh);
-
+        $chargeTracking = $this->calculateCurrentChargeMetrics($systemId, $systemState['current_soc'], $decision, $currentPrice);
 
         // Create history record
         $historyData = [
             'system_id' => $systemId,
             'interval_start' => $intervalStart,
-            'interval_end' => $intervalEnd,
             'soc_start' => $systemState['current_soc'],
-            'soc_end' => null, // Will be updated next interval
             'action' => $decision['action'],
             'power_kw' => $decision['power'] ?? 0,
-            'energy_kwh' => $energyKwh,
             'price_sek_kwh' => $currentPrice,
             'price_tier' => $priceTier,
             'daily_avg_price' => $dailyAvgPrice,
@@ -407,8 +377,8 @@ class BatteryControllerCommand extends Command
             ],
             'solar_production_kw' => $systemState['solar_power'],
             'home_consumption_kw' => $systemState['load_power'],
-            'grid_import_kw' => max(0, $systemState['grid_power']),
-            'grid_export_kw' => max(0, -$systemState['grid_power']),
+            'grid_export_kw' => max(0, $systemState['grid_power']),
+            'grid_import_kw' => max(0, -$systemState['grid_power']),
             // New cost tracking fields
             'cost_of_current_charge_sek' => $chargeTracking['total_cost'],
             'avg_charge_price_sek_kwh' => $chargeTracking['avg_price'],
@@ -421,7 +391,7 @@ class BatteryControllerCommand extends Command
     /**
      * Calculate current charge cost and energy metrics
      */
-    private function calculateCurrentChargeMetrics(string $systemId, float $currentSoc, array $decision, float $currentPrice, float $intervalEnergy): array
+    private function calculateCurrentChargeMetrics(string $systemId, float $currentSoc, array $decision, float $currentPrice): array
     {
         // Get recent charge intervals to calculate weighted average cost
         $recentChargeIntervals = BatteryHistory::forSystem($systemId)
@@ -433,38 +403,10 @@ class BatteryControllerCommand extends Command
         // Estimate energy in battery based on SOC
         $totalEnergyInBattery = (self::BATTERY_CAPACITY_KWH * $currentSoc) / 100;
 
-        if ($decision['action'] === 'charge') {
-            // Add current charging to the battery
-            $totalEnergyInBattery += $intervalEnergy * self::ROUND_TRIP_EFFICIENCY;
-        } elseif ($decision['action'] === 'discharge') {
-            // Remove current discharge from battery
-            $totalEnergyInBattery -= $intervalEnergy;
-        }
-
         // Calculate weighted average cost (FIFO basis)
         $totalCost = 0;
         $totalWeightedEnergy = 0;
         $intervalCount = 0;
-
-        foreach ($recentChargeIntervals as $chargeInterval) {
-            if ($intervalCount >= 20) break; // Limit to last 20 charging intervals for efficiency
-
-            $intervalCost = abs($chargeInterval->interval_cost_sek ?? 0);
-            $intervalEnergyStored = ($chargeInterval->energy_kwh ?? 0) * self::ROUND_TRIP_EFFICIENCY;
-
-            if ($intervalEnergyStored > 0) {
-                $totalCost += $intervalCost;
-                $totalWeightedEnergy += $intervalEnergyStored;
-                $intervalCount++;
-            }
-        }
-
-        // Add current interval if charging
-        if ($decision['action'] === 'charge' && $intervalEnergy > 0) {
-            $currentIntervalCost = $intervalEnergy * $currentPrice;
-            $totalCost += $currentIntervalCost;
-            $totalWeightedEnergy += $intervalEnergy * self::ROUND_TRIP_EFFICIENCY;
-        }
 
         // Calculate average price of energy in battery
         $avgPrice = $totalWeightedEnergy > 0 ? $totalCost / $totalWeightedEnergy : 0;
@@ -510,74 +452,6 @@ class BatteryControllerCommand extends Command
             return 'expensive';
         }
     }
-
-    /**
-     * Update active battery sessions
-     */
-    private function updateActiveSessions(string $systemId, array $systemState, array $decision, float $currentPrice): void
-    {
-        Log::info('Session management called', [
-            'system_id' => $systemId,
-            'action' => $decision['action'],
-            'soc' => $systemState['current_soc']
-        ]);
-
-        $activeSession = BatterySession::active()
-            ->forSystem($systemId)
-            ->orderBy('started_at', 'desc')
-            ->first();
-
-        Log::info('Active session query result', [
-            'found' => $activeSession ? true : false,
-            'session_id' => $activeSession?->id,
-            'session_action' => $activeSession?->action
-        ]);
-
-        if ($decision['action'] === 'idle') {
-            // End any active session
-            if ($activeSession) {
-                $activeSession->markCompleted($systemState['current_soc']);
-                Log::info('BatteryController: Completed session', ['session_id' => $activeSession->id]);
-            }
-        } else {
-            // Start new session if action changed or none exists
-            if (!$activeSession || $activeSession->action !== $decision['action']) {
-                if ($activeSession) {
-                    $activeSession->markCompleted($systemState['current_soc']);
-                }
-
-                Log::info('Creating new session with data', [
-                    'system_id' => $systemId,
-                    'action' => $decision['action'],
-                    'status' => 'active',
-                    'start_soc' => $systemState['current_soc'],
-                    'power_kw' => $decision['power'] ?? 3.0
-                ]);
-
-                $newSession = BatterySession::create([
-                    'system_id' => $systemId,
-                    'action' => $decision['action'],
-                    'status' => 'active',
-                    'started_at' => now(),
-                    'start_soc' => $systemState['current_soc'],
-                    'power_kw' => $decision['power'] ?? 3.0,
-                    'avg_price_sek_kwh' => $currentPrice,
-                    'decision_context' => [
-                        'trigger' => 'scheduled_controller',
-                        'confidence' => $decision['confidence'] ?? 'medium',
-                        'reason' => $decision['reason'] ?? 'Planner recommendation'
-                    ]
-                ]);
-
-                Log::info('BatteryController: Started new session', [
-                    'session_id' => $newSession->id,
-                    'action' => $decision['action'],
-                    'created' => true
-                ]);
-            }
-        }
-    }
-
 
     /**
      * Display system state
@@ -626,7 +500,7 @@ class BatteryControllerCommand extends Command
         $this->newLine();
         $this->info('📋 Cycle Summary');
         $this->line("   📝 History ID: {$record->id}");
-        $this->line("   ⏰ Interval: " . $record->interval_start->format('H:i') . '-' . $record->interval_end->format('H:i'));
+        $this->line("   ⏰ Interval: " . $record->interval_start->format('H:i'));
         $this->line("   🎯 Action: " . strtoupper($record->action));
         $this->line("   💰 Price: " . number_format($record->price_sek_kwh, 3) . " SEK/kWh ({$record->price_tier} tier)");
 

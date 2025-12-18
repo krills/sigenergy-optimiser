@@ -106,12 +106,35 @@ export interface BatterySchedule {
   error?: string | null;
 }
 
+export interface BatteryHistory {
+  soc_history: Array<{
+    timestamp: number;
+    soc: number;
+    interval_start: string;
+  }>;
+  charge_history: Array<{
+    timestamp: number;
+    power: number;
+    energy_kwh: number;
+    price: number;
+    decision_source: string;
+    interval_start: string;
+    interval_end: string;
+  }>;
+  total_intervals: number;
+  charge_intervals: number;
+  last_updated: string;
+  error?: string;
+}
+
 export interface CurrentBatteryMode {
   mode: 'charge' | 'discharge' | 'idle' | 'unknown';
   status: 'active' | 'inactive' | 'error';
   power_kw?: number | null;
   battery_soc?: number | null;
   battery_power?: number | null;
+  system_id?: string;
+  system_name?: string;
   last_updated?: string;
   error?: string;
 }
@@ -140,6 +163,7 @@ export interface PageProps {
     };
   };
   batterySchedule?: BatterySchedule;
+  batteryHistory?: BatteryHistory;
   currentBatteryMode?: CurrentBatteryMode;
   // Index signature to satisfy Inertia's PageProps constraint
   [key: string]: any;

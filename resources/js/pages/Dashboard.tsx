@@ -9,7 +9,7 @@ interface RealtimeDataState {
 }
 
 function Dashboard() {
-    const { authenticated, authError, systems, lastUpdated, cacheInfo, electricityPrices, batterySchedule, currentBatteryMode } = usePage<PageProps>().props;
+    const { authenticated, authError, systems, lastUpdated, cacheInfo, electricityPrices, batterySchedule, batteryHistory, currentBatteryMode } = usePage<PageProps>().props;
     const [realtimeData, setRealtimeData] = useState<RealtimeDataState>({});
     const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
@@ -18,7 +18,7 @@ function Dashboard() {
         try {
             const response = await fetch(`/api/system/${systemId}/energy-flow`);
             const data: ApiResponse<EnergyFlowData> = await response.json();
-            
+
             if (data.success) {
                 setRealtimeData(prev => ({
                     ...prev,
@@ -115,7 +115,7 @@ function Dashboard() {
     return (
         <>
             <Head title="Sigenergy Dashboard" />
-            
+
             <div className="min-h-screen bg-gray-50">
                 <nav className="bg-white shadow">
                     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -146,19 +146,20 @@ function Dashboard() {
                 <main>
                     <div className="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8">
                         <div className="px-4 py-6 sm:px-0">
-                            
+
                             {/* Electricity Price Chart */}
                             {electricityPrices && (
                                 <div className="mb-8">
-                                    <PriceChart 
+                                    <PriceChart
                                         prices={electricityPrices.prices || []}
                                         chargeIntervals={batterySchedule?.chargeIntervals || []}
+                                        batteryHistory={batteryHistory}
                                         priceTiers={batterySchedule?.priceTiers}
                                         loading={electricityPrices.loading}
                                         error={electricityPrices.error}
                                         provider={electricityPrices.provider}
                                     />
-                                    
+
                                     {/* Current Battery Mode */}
                                     {currentBatteryMode && (
                                         <div className="mt-4 p-4 bg-gray-50 border border-gray-200 rounded-lg">
@@ -166,10 +167,10 @@ function Dashboard() {
                                                 <div className="flex items-center space-x-2">
                                                     <span className="font-medium text-gray-700">Current Mode:</span>
                                                     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${
-                                                        currentBatteryMode.mode === 'charge' 
+                                                        currentBatteryMode.mode === 'charge'
                                                             ? 'bg-green-100 text-green-800'
                                                             : currentBatteryMode.mode === 'discharge'
-                                                            ? 'bg-orange-100 text-orange-800' 
+                                                            ? 'bg-orange-100 text-orange-800'
                                                             : currentBatteryMode.mode === 'idle'
                                                             ? 'bg-gray-100 text-gray-800'
                                                             : 'bg-red-100 text-red-800'
@@ -181,7 +182,7 @@ function Dashboard() {
                                                         {' '}{currentBatteryMode.mode}
                                                     </span>
                                                 </div>
-                                                
+
                                                 {currentBatteryMode.status === 'active' && (
                                                     <div className="text-sm text-gray-600 flex items-center space-x-4">
                                                         {currentBatteryMode.power_kw && typeof currentBatteryMode.power_kw === 'number' && (
@@ -192,7 +193,7 @@ function Dashboard() {
                                                         )}
                                                     </div>
                                                 )}
-                                                
+
                                                 {currentBatteryMode.status === 'error' && (
                                                     <span className="text-sm text-red-600">Error: {currentBatteryMode.error}</span>
                                                 )}
@@ -206,7 +207,7 @@ function Dashboard() {
                             {batterySchedule && !batterySchedule.error && (
                                 <div className="mb-8 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-6">
                                     <h3 className="text-lg font-semibold text-blue-900 mb-4">🔋 Battery Optimization Schedule</h3>
-                                    
+
                                     {batterySchedule.summary && (
                                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                                             <div className="bg-white rounded-lg p-3 text-center shadow-sm">
@@ -269,7 +270,7 @@ function Dashboard() {
                                     </div>
                                 </div>
                             )}
-                            
+
                             {/* Cache Info */}
                             {cacheInfo && (
                                 <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
@@ -291,7 +292,7 @@ function Dashboard() {
                                 <h2 className="text-2xl font-bold text-gray-900 mb-4">
                                     Solar Energy Systems ({systems?.length || 0})
                                 </h2>
-                                
+
                                 {!systems?.length ? (
                                     <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
                                         <p className="text-yellow-800">No systems found. Check your Sigenergy account configuration.</p>
@@ -389,7 +390,7 @@ function Dashboard() {
                                                     {system.devices && (
                                                         <div>
                                                             <h4 className="font-medium text-gray-900 mb-3">🔧 Device Breakdown ({system.devices.total} total)</h4>
-                                                            
+
                                                             {/* Quick Summary */}
                                                             <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
                                                                 <div className="text-center p-3 bg-green-50 border border-green-200 rounded">
@@ -430,7 +431,7 @@ function Dashboard() {
                                                                     <h5 className="font-medium text-gray-800 mb-2">📋 Device Details</h5>
                                                                     <div className="space-y-2 max-h-64 overflow-y-auto">
                                                                         {system.rawDevices.map((device, deviceIndex) => (
-                                                                            <div key={`${device.serialNumber}-${deviceIndex}`} 
+                                                                            <div key={`${device.serialNumber}-${deviceIndex}`}
                                                                                  className="bg-gray-50 border border-gray-200 rounded p-3 text-sm">
                                                                                 <div className="flex justify-between items-start">
                                                                                     <div className="flex-1">
@@ -457,7 +458,7 @@ function Dashboard() {
                                                                                         </span>
                                                                                     </div>
                                                                                 </div>
-                                                                                
+
                                                                                 {/* Show important attributes if available */}
                                                                                 {device.attrMap && Object.keys(device.attrMap).length > 0 && (
                                                                                     <div className="mt-2 pt-2 border-t border-gray-300">
