@@ -1,0 +1,77 @@
+name: Deploy to staging
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install NPM dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Prepare testing - PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          tools: composer:v2
+          extensions: mbstring, xml, ctype, zip, json, tokenizer, bcmath, fileinfo, exif, imagick
+          coverage: none
+
+      - name: Prepare testing - copy env
+        run: cp .env.ci .env
+
+      - name: Prepare testing - composer
+        run: composer install --prefer-dist --no-interaction
+
+      - name: Generate Application Key
+        run: php artisan key:generate
+
+      - name: Run PHPUnit tests
+        run: vendor/bin/phpunit
+
+      - name: Clean old build dir
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_DEPLOY_KEY }}
+          script: rm -rf /var/www/public/build
+
+      - name: Upload new build dir
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_DEPLOY_KEY }}
+          source: "public/build"
+          target: "/var/www"
+
+      - name: Deploy backend and install
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_DEPLOY_KEY }}
+          script: |
+            cd /var/www
+            git pull origin main
+            composer install --no-dev --optimize-autoloader
+            php artisan migrate --force
+            php artisan config:cache
+            php artisan route:cache
+            php artisan view:cache
+            php artisan optimize:clear
