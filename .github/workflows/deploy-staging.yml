@@ -27,6 +27,18 @@ jobs:
                sudo mv /tmp/solapp/* /var/www/
                sudo mv /tmp/solapp/.* /var/www/ 2>/dev/null || true
                sudo chown -R ec2-user:ec2-user /var/www
+               # Add ec2-user to nginx group
+                sudo usermod -a -G nginx ec2-user
+
+                # Add nginx to ec2-user group (optional, for flexibility)
+                sudo usermod -a -G ec2-user nginx
+
+                # Set shared group ownership on logs
+                sudo chown -R ec2-user:nginx /var/www/storage/logs
+                sudo chmod -R 775 /var/www/storage/logs
+
+                # Set group sticky bit so new files inherit group
+                sudo chmod g+s /var/www/storage/logs
              else
                echo "Repository exists, pulling latest changes..."
                cd /var/www

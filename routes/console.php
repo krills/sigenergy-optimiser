@@ -1,10 +1,9 @@
 <?php
 
-use Illuminate\Foundation\Inspiring;
-use Illuminate\Support\Facades\Artisan;
+use App\Console\Commands\BatteryControllerCommand;
 use Illuminate\Support\Facades\Schedule;
 
-Schedule::command('send-instruction')
+Schedule::command(BatteryControllerCommand::SIGNATURE)
     ->everyFifteenMinutes()
     ->withoutOverlapping()
     ->appendOutputTo(storage_path('logs/battery-optimization.log'));

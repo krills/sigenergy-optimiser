@@ -12,7 +12,8 @@ use Illuminate\Support\Facades\Log;
 
 class BatteryControllerCommand extends Command
 {
-    protected $signature = 'app:send-instruction
+    public const string SIGNATURE = 'app:send-instruction';
+    protected $signature = self::SIGNATURE .'
                             {--dry-run : Show what would be done without executing}
                             {--force : Force execution even outside normal schedule}
                             {--system-id= : Sigenergy system ID to control}
@@ -78,7 +79,7 @@ class BatteryControllerCommand extends Command
             // 5. Ask BatteryPlanner for pure price-based recommendation
             $this->line('🧠 Asking BatteryPlanner for price analysis...');
             $priceRecommendation = $this->planner->makeImmediateDecision($flooredPrices);
-            
+
             // 6. Apply operational logic (SOC, grid, load) to price recommendation
             $this->line('⚙️ Applying operational constraints...');
             $plannerDecision = $this->applyOperationalLogic($priceRecommendation, $systemState);
@@ -343,10 +344,10 @@ class BatteryControllerCommand extends Command
         $loadPower = $systemState['load_power'];
         $netLoad = $loadPower - $solarPower; // Positive = need power, negative = excess
         $currentGridConsumption = $netLoad;
-        
+
         // Start with price recommendation
         $decision = $priceRecommendation;
-        
+
         // Emergency charging takes absolute priority
         if ($currentSOC <= 10) {
             return [
@@ -358,7 +359,7 @@ class BatteryControllerCommand extends Command
                 'override_reason' => 'Emergency SOC override'
             ];
         }
-        
+
         // SOC-based constraints on price recommendation
         if ($decision['action'] === 'charge') {
             if ($currentSOC >= 95) {
@@ -371,7 +372,7 @@ class BatteryControllerCommand extends Command
                 $decision['power'] = $this->calculateOptimalChargePower($currentGridConsumption);
             }
         }
-        
+
         if ($decision['action'] === 'discharge') {
             if ($currentSOC <= 20) {
                 $decision['action'] = 'idle';
@@ -384,7 +385,7 @@ class BatteryControllerCommand extends Command
                 $decision['power'] = min($maxDischargePower, max(1.0, $netLoad));
             }
         }
-        
+
         // If price recommendation is idle, check for load balancing needs
         if ($decision['action'] === 'idle') {
             // High excess solar - absorb with charging
@@ -398,7 +399,7 @@ class BatteryControllerCommand extends Command
                     'confidence' => 'medium'
                 ];
             }
-            
+
             // High load demand - assist with discharging
             if ($netLoad > 2.0 && $currentSOC > 25) {
                 $maxDischargePower = (float) $this->option('charge-power'); // Use same limit
@@ -411,7 +412,7 @@ class BatteryControllerCommand extends Command
                 ];
             }
         }
-        
+
         return $decision;
     }
 
