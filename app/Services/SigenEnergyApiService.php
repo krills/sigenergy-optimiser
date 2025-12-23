@@ -26,14 +26,6 @@ class SigenEnergyApiService
 
     public function __construct()
     {
-        $this->baseUrl = config('services.sigenergy.base_url', 'https://api-eu.sigencloud.com');
-        $this->appKey = config('services.sigenergy.app_key');
-        $this->appSecret = config('services.sigenergy.app_secret');
-
-        $this->mqttServer = config('services.sigenergy.mqtt_server');
-        $this->mqttPort = config('services.sigenergy.mqtt_port', 1883);
-        $this->mqttUsername = config('services.sigenergy.mqtt_username');
-        $this->mqttPassword = config('services.sigenergy.mqtt_password');
     }
 
     /**
@@ -42,6 +34,15 @@ class SigenEnergyApiService
      */
     public function authenticate(): ?string
     {
+        $this->baseUrl = config('services.sigenergy.base_url', 'https://api-eu.sigencloud.com');
+        $this->appKey = config('services.sigenergy.app_key');
+        $this->appSecret = config('services.sigenergy.app_secret');
+
+        $this->mqttServer = config('services.sigenergy.mqtt_server');
+        $this->mqttPort = config('services.sigenergy.mqtt_port', 1883);
+        $this->mqttUsername = config('services.sigenergy.mqtt_username');
+        $this->mqttPassword = config('services.sigenergy.mqtt_password');
+
         if ($token = Cache::get(self::TOKEN_CACHE_KEY)) {
             return $token;
         }
