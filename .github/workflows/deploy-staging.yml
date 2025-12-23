@@ -12,6 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify key format
+        run: |
+            echo "First line of key:"
+            echo '${{ secrets.EC2_DEPLOY_KEY }}' | head -1
+            echo "Last line of key:"
+            echo '${{ secrets.EC2_DEPLOY_KEY }}' | tail -1
+
       - name: Deploy backend and install
         uses: appleboy/ssh-action@v1.0.3
         with:
