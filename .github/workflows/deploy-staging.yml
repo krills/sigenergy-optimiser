@@ -40,14 +40,6 @@ jobs:
       - name: Generate Application Key
         run: php artisan key:generate
 
-      - name: Clean old build dir
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_DEPLOY_KEY }}
-          script: rm -rf /var/www/public/build
-
       - name: Upload new build dir
         uses: appleboy/scp-action@v0.1.7
         with:
