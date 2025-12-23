@@ -23,7 +23,7 @@ jobs:
              if [ ! -f "/var/www/composer.json" ]; then
                echo "Cloning repository to /var/www..."
                sudo rm -rf /var/www/*
-               sudo git clone https://github.com/${{ github.repository }.git /tmp/solapp
+               sudo git clone https://github.com/${{ github.repository }}.git /tmp/solapp
                sudo mv /tmp/solapp/* /var/www/
                sudo mv /tmp/solapp/.* /var/www/ 2>/dev/null || true
                sudo chown -R ec2-user:ec2-user /var/www
