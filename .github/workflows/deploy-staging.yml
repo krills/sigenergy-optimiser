@@ -15,6 +15,7 @@ jobs:
       - name: Deploy backend and install
         uses: appleboy/ssh-action@v1.0.3
         with:
+          debug: true
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_DEPLOY_KEY }}
