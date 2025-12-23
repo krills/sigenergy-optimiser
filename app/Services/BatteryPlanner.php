@@ -7,21 +7,15 @@ use Illuminate\Support\Facades\Log;
 
 class BatteryPlanner
 {
-    // Configuration constants
-    private const int MIN_SOC = 10; // Never discharge below 20%
-    private const int MAX_SOC = 95; // Never charge above 95%
-    private const float BATTERY_CAPACITY = 8.0; // kWh (8kWh system)
-    private const float MAX_CHARGING_POWER = 3.0; // kW (per 15-minute interval: 0.75 kWh)
-    private const float MAX_DISCHARGE_POWER = 3.0; // kW (per 15-minute interval: 0.75 kWh)
-    private const float ROUND_TRIP_EFFICIENCY = 0.93; // 93% efficiency
+    // Configuration constants (for price analysis only)
+    private const float MAX_CHARGING_POWER = 3.0; // kW (for price recommendations)
+    private const float MAX_DISCHARGE_POWER = 3.0; // kW (for price recommendations)
 
     // 15-minute interval constants
     private const int INTERVAL_DURATION = 15; // minutes
-    private const float ENERGY_PER_INTERVAL = 0.75; // kWh (3kW * 0.25 hours)
 
     // Planning parameters
     private const int PLANNING_HORIZON_INTERVALS = 192; // 48 hours (2 days)
-    private const float DESIRED_MAX_GRID_CONSUMPTION_KWH = 5.0;
 
     /**
      * Generate a complete charge/discharge schedule for 15-minute intervals
@@ -30,87 +24,93 @@ class BatteryPlanner
     {
         $startTime = $startTime ?? now();
 
-        Log::info('BatteryPlanner: Generating 15-minute schedule', [
-            'current_soc' => $currentSOC,
-            'price_intervals' => count($intervalPrices),
-            'start_time' => $startTime->format('Y-m-d H:i:s')
-        ]);
-
-        // Validate inputs
         $this->validateInputs($intervalPrices, $currentSOC);
 
-        // Analyze price patterns with 15-minute granularity
         $priceAnalysis = $this->analyzePricePatterns($intervalPrices);
 
-        // Generate optimized schedule for each 15-minute interval
+        // Generate price-based schedule for each 15-minute interval
         $schedule = $this->createOptimal15MinuteSchedule($intervalPrices, $currentSOC, $priceAnalysis, $startTime);
 
-        // Validate and optimize schedule
-        $optimizedSchedule = $this->optimizeSchedule($schedule, $currentSOC);
-
-        Log::info('BatteryPlanner: 15-minute schedule generated', [
-            'total_intervals' => count($optimizedSchedule),
-            'charge_intervals' => count(array_filter($optimizedSchedule, fn($s) => $s['action'] === 'charge')),
-            'discharge_intervals' => count(array_filter($optimizedSchedule, fn($s) => $s['action'] === 'discharge')),
-            'idle_intervals' => count(array_filter($optimizedSchedule, fn($s) => $s['action'] === 'idle'))
-        ]);
-
         return [
-            'schedule' => $optimizedSchedule,
+            'schedule' => $schedule,
             'analysis' => $priceAnalysis,
-            'summary' => $this->generateScheduleSummary($optimizedSchedule, $currentSOC),
             'generated_at' => now(),
             'valid_until' => $startTime->copy()->addMinutes(self::PLANNING_HORIZON_INTERVALS * self::INTERVAL_DURATION)
         ];
     }
 
     /**
-     * Make immediate decision for current 15-minute interval
+     * Make immediate price-based decision for current 15-minute interval
+     * Returns pure price analysis without operational constraints
      */
-    public function makeImmediateDecision(
-        array $intervalPrices,
-        float $currentSOC,
-        float $currentSolarPower = 0,
-        float $currentLoadPower = 0
-    ): array {
-
-        $now = now();
-        $currentInterval = $this->timeToInterval($now);
+    public function makeImmediateDecision(array $intervalPrices, ?int $currentInterval = null): array {
+        // If no interval specified, calculate from current time
+        if ($currentInterval === null) {
+            $currentInterval = $this->timeToInterval(now());
+        }
+        
+        // Ensure interval is valid
+        if ($currentInterval < 0 || $currentInterval >= count($intervalPrices)) {
+            $currentInterval = 0; // Default to first interval if calculation fails
+        }
+        
         $currentPrice = $intervalPrices[$currentInterval]['value'] ?? 0.50;
 
-        Log::info('BatteryPlanner: Making immediate 15-minute decision', [
-            'current_soc' => $currentSOC,
-            'current_price' => $currentPrice,
-            'solar_power' => $currentSolarPower,
-            'load_power' => $currentLoadPower,
-            'interval' => $currentInterval,
-            'time' => $now->format('Y-m-d H:i:s')
-        ]);
+        // Use the same price analysis as generateSchedule
+        $priceAnalysis = $this->analyzePricePatterns($intervalPrices);
+        
+        // Check if current interval is in charge or discharge windows (same logic as determineIntervalAction)
+        $chargeWindows = $priceAnalysis['charge_windows'];
+        $dischargeWindows = $priceAnalysis['discharge_windows'];
+        
+        $inChargeWindow = collect($chargeWindows)->contains('interval', $currentInterval);
+        $inDischargeWindow = collect($dischargeWindows)->contains('interval', $currentInterval);
+        
+        if ($inChargeWindow) {
+            // Find the specific charge window for details
+            $chargeWindow = collect($chargeWindows)->firstWhere('interval', $currentInterval);
+            $tier = $chargeWindow['tier'] ?? 'unknown';
+            $savings = $chargeWindow['savings'] ?? 0;
+            
+            $decision = [
+                'action' => 'charge',
+                'power' => self::MAX_CHARGING_POWER,
+                'duration' => 15,
+                'reason' => sprintf("Charge window: %.3f SEK/kWh (%s tier, %.3f SEK savings)",
+                                  $currentPrice, $tier, $savings),
+                'confidence' => 'high'
+            ];
+        } elseif ($inDischargeWindow) {
+            // Find the specific discharge window for details
+            $dischargeWindow = collect($dischargeWindows)->firstWhere('interval', $currentInterval);
+            $earnings = $dischargeWindow['earnings'] ?? 0;
+            
+            $decision = [
+                'action' => 'discharge',
+                'power' => self::MAX_DISCHARGE_POWER,
+                'duration' => 15,
+                'reason' => sprintf("Discharge window: %.3f SEK/kWh (expensive tier, %.3f SEK premium)",
+                                  $currentPrice, $earnings),
+                'confidence' => 'high'
+            ];
+        } else {
+            // Not in any specific window - idle
+            $decision = [
+                'action' => 'idle',
+                'power' => 0,
+                'duration' => 15,
+                'reason' => sprintf("Idle: %.3f SEK/kWh (neutral tier)", $currentPrice),
+                'confidence' => 'medium'
+            ];
+        }
 
-        // Get next few intervals for context
-        $nextIntervals = array_slice($intervalPrices, $currentInterval, 16); // Next 4 hours
-        $priceContext = $this->analyzePriceContext($currentPrice, $nextIntervals, $intervalPrices);
-
-        // Calculate net load (positive = need power, negative = excess power)
-        $netLoad = $currentLoadPower - $currentSolarPower;
-
-        // Calculate current grid consumption (positive = importing, negative = exporting)
-        $currentGridConsumption = $netLoad; // This is what we're currently drawing from/feeding to grid
-        // Make decision based on multiple factors
-        $decision = $this->calculateImmediateAction(
-            $currentSOC,
-            $currentPrice,
-            $netLoad,
-            $priceContext,
-            $currentGridConsumption
-        );
-
-        Log::info('BatteryPlanner: Immediate decision made', [
-            'action' => $decision['action'],
-            'power' => $decision['power'],
-            'duration' => $decision['duration'],
-            'reason' => $decision['reason']
-        ]);
+        // Add price context to decision
+        $decision['current_price'] = $currentPrice;
+        $decision['current_interval'] = $currentInterval;
+        $decision['price_analysis'] = [
+            'charge_opportunities' => count($chargeWindows),
+            'discharge_opportunities' => count($dischargeWindows)
+        ];
 
         return $decision;
     }
@@ -217,7 +217,7 @@ class BatteryPlanner
     }
 
     /**
-     * Create optimal schedule for 15-minute intervals based on price analysis
+     * Create optimal schedule for 15-minute intervals based on pure price analysis
      */
     private function createOptimal15MinuteSchedule(
         array $intervalPrices,
@@ -226,9 +226,8 @@ class BatteryPlanner
         Carbon $startTime
     ): array {
         $schedule = [];
-        $simulatedSOC = $currentSOC;
 
-        // Create schedule for each 15-minute interval
+        // Create schedule for each 15-minute interval (pure price-based, no SOC simulation)
         $totalIntervals = min(count($intervalPrices), self::PLANNING_HORIZON_INTERVALS);
 
         for ($i = 0; $i < $totalIntervals; $i++) {
@@ -236,8 +235,8 @@ class BatteryPlanner
             $price = $interval['value'];
             $timestamp = Carbon::parse($interval['time_start']);
 
-            // Determine action based on price analysis and current SOC
-            $action = $this->determineIntervalAction($price, $simulatedSOC, $priceAnalysis, $i);
+            // Determine action based on pure price analysis
+            $action = $this->determineIntervalAction($price, $currentSOC, $priceAnalysis, $i);
 
             $scheduleEntry = [
                 'interval' => $i,
@@ -246,59 +245,36 @@ class BatteryPlanner
                 'end_time' => $timestamp->copy()->addMinutes(15),
                 'price' => $price,
                 'power' => $this->calculateIntervalPower($action),
-                'energy_change' => $this->calculateEnergyChange($action),
-                'target_soc' => $this->calculateTargetSOC($simulatedSOC, $action),
                 'reason' => $this->getActionReason($action, $price, $priceAnalysis, $i)
             ];
 
             $schedule[] = $scheduleEntry;
-
-            // Update simulated SOC for next interval
-            $simulatedSOC = $scheduleEntry['target_soc'];
         }
 
         return $schedule;
     }
 
     /**
-     * Determine action for a specific 15-minute interval
+     * Determine action for a specific 15-minute interval (pure price-based, consistent with makeImmediateDecision)
      */
     private function determineIntervalAction(float $price, float $currentSOC, array $priceAnalysis, int $intervalIndex): string
     {
-        // Get pricing tiers from analysis
+        // Check if this interval is in charge or discharge windows (same logic as the new method)
         $chargeWindows = $priceAnalysis['charge_windows'];
         $dischargeWindows = $priceAnalysis['discharge_windows'];
-
-        // Check if current interval is in charge or discharge windows
+        
         $inChargeWindow = collect($chargeWindows)->contains('interval', $intervalIndex);
         $inDischargeWindow = collect($dischargeWindows)->contains('interval', $intervalIndex);
-
-        // Safety checks first
-        if ($currentSOC <= self::MIN_SOC) {
-            return 'charge'; // Emergency charge
-        }
-
-        if ($currentSOC >= self::MAX_SOC) {
-            return 'idle'; // Cannot charge more
-        }
-
-        // New 3-tier algorithm: Charge during cheapest 2/3 of intervals
+        
         if ($inChargeWindow) {
-            // Price is in cheapest or middle tier - good time to charge
-            if ($currentSOC < 85) { // Only charge if there's room
-                return 'charge';
-            }
+            return 'charge';
         }
-
-        // Discharge only during most expensive third
+        
         if ($inDischargeWindow) {
-            // Price is in most expensive tier - good time to discharge
-            if ($currentSOC > 30) { // Only discharge if we have energy
-                return 'discharge';
-            }
+            return 'discharge';
         }
-
-        // Price is not optimal or SOC limits prevent action
+        
+        // Not in any specific window - default to idle
         return 'idle';
     }
 
@@ -318,40 +294,7 @@ class BatteryPlanner
         }
     }
 
-    /**
-     * Calculate energy change for a 15-minute interval action
-     */
-    private function calculateEnergyChange(string $action): float
-    {
-        switch ($action) {
-            case 'charge':
-                return self::ENERGY_PER_INTERVAL; // 0.75 kWh per 15 minutes at 3kW
-            case 'discharge':
-                return self::ENERGY_PER_INTERVAL; // 0.75 kWh per 15 minutes at 3kW
-            case 'idle':
-            default:
-                return 0.0;
-        }
-    }
 
-    /**
-     * Calculate target SOC after interval action
-     */
-    private function calculateTargetSOC(float $currentSOC, string $action): float
-    {
-        $energyChange = $this->calculateEnergyChange($action);
-        $socChange = ($energyChange / self::BATTERY_CAPACITY) * 100;
-
-        switch ($action) {
-            case 'charge':
-                return min(self::MAX_SOC, $currentSOC + ($socChange * self::ROUND_TRIP_EFFICIENCY));
-            case 'discharge':
-                return max(self::MIN_SOC, $currentSOC - $socChange);
-            case 'idle':
-            default:
-                return $currentSOC;
-        }
-    }
 
     /**
      * Get human-readable reason for action
@@ -431,87 +374,34 @@ class BatteryPlanner
         return intval($minutesSinceStart / self::INTERVAL_DURATION);
     }
 
+
     /**
-     * Calculate immediate action for quarter-hour execution
+     * Calculate purely price-based action recommendation (fallback for edge cases)
      */
-    private function calculateImmediateAction(
-        float $currentSOC,
-        float $currentPrice,
-        float $netLoad,
-        array $priceContext,
-        float $currentGridConsumption
-    ): array {
-
-        // Default action
-        $action = [
-            'action' => 'idle',
-            'power' => 0,
-            'duration' => 15, // minutes
-            'reason' => 'No action needed',
-            'confidence' => 'medium'
-        ];
-
-        // Emergency situations first
-        if ($currentSOC < self::MIN_SOC) {
-            return [
-                'action' => 'charge',
-                'power' => $this->optimalChargePower($currentGridConsumption),
-                'duration' => 15,
-                'reason' => sprintf('Emergency charge - SOC critically low (targeting %.1fkW grid load)', self::MAX_CHARGING_POWER),
-                'confidence' => 'high'
-            ];
-        }
-
-        if ($currentSOC >= self::MAX_SOC) {
-            // Only discharge if price is favorable or we're past evening peaks
-            $currentHour = now()->hour;
-            $isEvening = $currentHour >= 20; // After 8 PM, second peak has passed
-            $avgPrice = $priceContext['average_price'] ?? 0.50;
-            $isExpensivePeriod = $currentPrice > $avgPrice * 1.1; // 10% above average
-            $isMiddlePricePeriod = $currentPrice >= $avgPrice * 0.9 && $currentPrice <= $avgPrice * 1.1;
-
-            // Discharge conditions:
-            // 1. Expensive period (always discharge to avoid buying expensive grid power)
-            // 2. Evening + middle price period (second peak passed, safe to discharge)
-            // 3. High load demand regardless of price
-            if ($isExpensivePeriod || ($isEvening && $isMiddlePricePeriod) || $netLoad > 2.0) {
-                $reason = $isExpensivePeriod ? 'SOC full, expensive period' :
-                         ($isEvening && $isMiddlePricePeriod ? 'SOC full, evening middle price' : 'SOC full, high load demand');
-
-                return [
-                    'action' => 'discharge',
-                    'power' => min(self::MAX_DISCHARGE_POWER, max($netLoad, 1.0)),
-                    'duration' => 15,
-                    'reason' => $reason,
-                    'confidence' => 'high'
-                ];
-            }
-
-            // In cheap periods (lower 2/3), conserve energy for next peak
-            return [
-                'action' => 'idle',
-                'power' => 0,
-                'duration' => 15,
-                'reason' => 'SOC full, conserving for next price peak',
-                'confidence' => 'medium'
-            ];
-        }
-
-        // Price-based decisions for 15-minute intervals
+    private function calculatePriceBasedAction(float $currentPrice, array $priceContext): array
+    {
         $avgPrice = $priceContext['average_price'] ?? 0.50;
+        $currentHour = $priceContext['hour'] ?? now()->hour; // Allow hour to be passed in context
 
-        if ($currentPrice < $avgPrice * 0.8 && $currentSOC < 80) {
+        // Price thresholds
+        $veryCheapThreshold = $avgPrice * 0.8;  // 80% of average
+        $expensiveThreshold = $avgPrice * 1.2;  // 120% of average
+        $middleThreshold = $avgPrice * 1.1;     // 110% of average
+
+        // Very cheap prices - always recommend charging
+        if ($currentPrice < $veryCheapThreshold) {
             return [
                 'action' => 'charge',
-                'power' => $this->optimalChargePower($currentGridConsumption),
+                'power' => self::MAX_CHARGING_POWER,
                 'duration' => 15,
-                'reason' => sprintf("Very cheap price: %.3f SEK/kWh (%.1f%% below average, targeting %.1fkW grid load)",
-                                  $currentPrice, (($avgPrice - $currentPrice) / $avgPrice) * 100, self::MAX_CHARGING_POWER),
+                'reason' => sprintf("Very cheap price: %.3f SEK/kWh (%.1f%% below average)",
+                                  $currentPrice, (($avgPrice - $currentPrice) / $avgPrice) * 100),
                 'confidence' => 'high'
             ];
         }
 
-        if ($currentPrice > $avgPrice * 1.2 && $currentSOC > 30) {
+        // Very expensive prices - always recommend discharging
+        if ($currentPrice > $expensiveThreshold) {
             return [
                 'action' => 'discharge',
                 'power' => self::MAX_DISCHARGE_POWER,
@@ -522,8 +412,38 @@ class BatteryPlanner
             ];
         }
 
-        return $action;
+        // Expensive but not very expensive - discharge with time consideration
+        if ($currentPrice > $middleThreshold) {
+            $isEvening = $currentHour >= 20; // After 8 PM
+            if ($isEvening) {
+                return [
+                    'action' => 'discharge',
+                    'power' => self::MAX_DISCHARGE_POWER,
+                    'duration' => 15,
+                    'reason' => 'Moderately expensive price in evening period',
+                    'confidence' => 'medium'
+                ];
+            } else {
+                return [
+                    'action' => 'idle',
+                    'power' => 0,
+                    'duration' => 15,
+                    'reason' => 'Moderately expensive but conserving for evening peak',
+                    'confidence' => 'medium'
+                ];
+            }
+        }
+
+        // Normal/cheap prices - default to idle, let controller decide based on SOC/load
+        return [
+            'action' => 'idle',
+            'power' => 0,
+            'duration' => 15,
+            'reason' => sprintf("Normal price: %.3f SEK/kWh (let controller decide based on operational factors)", $currentPrice),
+            'confidence' => 'low'
+        ];
     }
+
 
     /**
      * Analyze price context for immediate decisions
@@ -581,9 +501,19 @@ class BatteryPlanner
             throw new \InvalidArgumentException('Current SOC must be between 0 and 100');
         }
 
-        foreach ($intervalPrices as $interval) {
-            if (!isset($interval['value']) || $interval['value'] < 0 || $interval['value'] > 10) {
-                throw new \InvalidArgumentException('Invalid price detected in interval data');
+        foreach ($intervalPrices as $index => $interval) {
+            if (!isset($interval['value'])) {
+                throw new \InvalidArgumentException("Missing price value at interval {$index}");
+            }
+
+            $price = $interval['value'];
+            if (!is_numeric($price)) {
+                throw new \InvalidArgumentException("Non-numeric price detected at interval {$index}: " . var_export($price, true));
+            }
+
+            // Allow negative prices (common with high renewable generation) and wide range for different units
+            if ($price < -1000 || $price > 5000) {
+                throw new \InvalidArgumentException("Price out of reasonable range at interval {$index}: {$price} (expected -1000 to 5000)");
             }
         }
     }
@@ -629,78 +559,6 @@ class BatteryPlanner
         }
     }
 
-    private function optimizeSchedule(array $schedule, float $currentSOC): array
-    {
-        // Remove conflicting sessions and ensure SOC constraints
-        $optimized = [];
-        $simulatedSOC = $currentSOC;
 
-        foreach ($schedule as $session) {
-            // Check if session is still valid given current SOC
-            if ($session['action'] === 'charge' && $simulatedSOC >= self::MAX_SOC * 0.98) {
-                // Skip charging if nearly full
-                $session['action'] = 'idle';
-                $session['power'] = 0;
-                $session['energy_change'] = 0;
-                $session['target_soc'] = $simulatedSOC;
-                $session['reason'] = 'Skipped charge - SOC near maximum';
-            }
 
-            if ($session['action'] === 'discharge' && $simulatedSOC <= self::MIN_SOC * 1.02) {
-                // Skip discharging if nearly empty
-                $session['action'] = 'idle';
-                $session['power'] = 0;
-                $session['energy_change'] = 0;
-                $session['target_soc'] = $simulatedSOC;
-                $session['reason'] = 'Skipped discharge - SOC near minimum';
-            }
-
-            $optimized[] = $session;
-
-            // Update simulated SOC
-            $simulatedSOC = $session['target_soc'];
-        }
-
-        return $optimized;
-    }
-
-    private function generateScheduleSummary(array $schedule, float $currentSOC): array
-    {
-        $chargeIntervals = array_filter($schedule, fn($s) => $s['action'] === 'charge');
-        $dischargeIntervals = array_filter($schedule, fn($s) => $s['action'] === 'discharge');
-        $idleIntervals = array_filter($schedule, fn($s) => $s['action'] === 'idle');
-
-        // Calculate total energy and financial impact
-        $totalChargeEnergy = count($chargeIntervals) * self::ENERGY_PER_INTERVAL;
-        $totalDischargeEnergy = count($dischargeIntervals) * self::ENERGY_PER_INTERVAL;
-
-        $totalSavings = array_sum(array_map(function($interval) {
-            return $interval['energy_change'] * ($interval['savings'] ?? 0);
-        }, $chargeIntervals));
-
-        $totalEarnings = array_sum(array_map(function($interval) {
-            return $interval['energy_change'] * ($interval['earnings'] ?? 0) * self::ROUND_TRIP_EFFICIENCY;
-        }, $dischargeIntervals));
-
-        return [
-            'total_intervals' => count($schedule),
-            'charge_intervals' => count($chargeIntervals),
-            'discharge_intervals' => count($dischargeIntervals),
-            'idle_intervals' => count($idleIntervals),
-            'charge_hours' => count($chargeIntervals) * 0.25, // 15 minutes = 0.25 hours
-            'discharge_hours' => count($dischargeIntervals) * 0.25,
-            'total_charge_energy' => $totalChargeEnergy,
-            'total_discharge_energy' => $totalDischargeEnergy,
-            'estimated_savings' => $totalSavings,
-            'estimated_earnings' => $totalEarnings,
-            'net_benefit' => $totalEarnings + $totalSavings,
-            'starting_soc' => $currentSOC,
-            'efficiency_utilized' => self::ROUND_TRIP_EFFICIENCY
-        ];
-    }
-
-    private function optimalChargePower(float $currentGridConsumption)
-    {
-        return min(self::MAX_CHARGING_POWER, self::DESIRED_MAX_GRID_CONSUMPTION_KWH - $currentGridConsumption);
-    }
 }

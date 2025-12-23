@@ -479,11 +479,38 @@ class AdminDashboardController extends Controller
 
             // Convert price data to format expected by BatteryPlanner
             $intervalPrices = [];
-            foreach ($pricesData['prices'] as $priceData) {
+            foreach ($pricesData['prices'] as $index => $priceData) {
+                // Floor negative prices to 0 for optimization calculations (but preserve in display)
+                $originalPrice = $priceData['price'];
+                $optimizationPrice = max(0, $originalPrice); // Ceiling to minimum 0
+                
                 $intervalPrices[] = [
                     'time_start' => date('c', $priceData['timestamp']),
-                    'value' => $priceData['price']
+                    'value' => $optimizationPrice,
+                    'original_value' => $originalPrice // Keep original for display/logging
                 ];
+            }
+            
+            // Debug logging for price validation issues
+            if (!empty($intervalPrices)) {
+                $originalPrices = array_column($intervalPrices, 'original_value');
+                $flooredPrices = array_column($intervalPrices, 'value');
+                $negativeCount = count(array_filter($originalPrices, fn($p) => $p < 0));
+                
+                Log::debug('Dashboard: Price data for BatteryPlanner', [
+                    'total_intervals' => count($intervalPrices),
+                    'negative_prices_count' => $negativeCount,
+                    'original_range' => [
+                        'min' => min($originalPrices),
+                        'max' => max($originalPrices)
+                    ],
+                    'floored_range' => [
+                        'min' => min($flooredPrices),
+                        'max' => max($flooredPrices)
+                    ],
+                    'sample_original' => array_slice($originalPrices, 0, 5),
+                    'sample_floored' => array_slice($flooredPrices, 0, 5)
+                ]);
             }
 
             // Generate optimization schedule
@@ -503,19 +530,28 @@ class AdminDashboardController extends Controller
                 ];
             }
 
+            // Generate summary from analysis data  
+            $chargeWindows = $result['analysis']['charge_windows'] ?? [];
+            $dischargeWindows = $result['analysis']['discharge_windows'] ?? [];
+            
+            $summary = [
+                'total_intervals' => count($result['schedule']),
+                'charge_intervals' => count($chargeWindows),
+                'discharge_intervals' => count($dischargeWindows),
+                'idle_intervals' => count($result['schedule']) - count($chargeWindows) - count($dischargeWindows),
+                'charge_hours' => count($chargeWindows) * 0.25, // 15 minutes = 0.25 hours
+                'discharge_hours' => count($dischargeWindows) * 0.25,
+                'cheapest_windows' => count(array_filter($chargeWindows, fn($w) => $w['tier'] === 'cheapest')),
+                'middle_windows' => count(array_filter($chargeWindows, fn($w) => $w['tier'] === 'middle')),
+                'starting_soc' => $currentSOC,
+                'note' => 'Shows ALL potential charge windows (SOC-agnostic)'
+            ];
+
             $dataToCache = [
                 'schedule' => $result['schedule'],
                 'chargeIntervals' => $chargeIntervals,
                 'analysis' => $result['analysis'],
-                'summary' => array_merge($result['summary'], [
-                    'charge_intervals' => count($result['analysis']['charge_windows']),
-                    'discharge_intervals' => count($result['analysis']['discharge_windows']),
-                    'charge_hours' => count($result['analysis']['charge_windows']) * 0.25,
-                    'discharge_hours' => count($result['analysis']['discharge_windows']) * 0.25,
-                    'cheapest_windows' => count(array_filter($result['analysis']['charge_windows'], fn($w) => $w['tier'] === 'cheapest')),
-                    'middle_windows' => count(array_filter($result['analysis']['charge_windows'], fn($w) => $w['tier'] === 'middle')),
-                    'note' => 'Shows ALL potential charge windows (SOC-agnostic)'
-                ]),
+                'summary' => $summary,
                 'priceTiers' => $result['analysis']['price_tiers'] ?? null,
                 'generated_at' => now()->toISOString(),
                 'current_soc' => $currentSOC,

@@ -9,7 +9,7 @@ use Carbon\Carbon;
 
 class ShowBatterySchedule extends Command
 {
-    protected $signature = 'show-plan
+    protected $signature = 'app:show-plan
                           {--soc=50 : Current State of Charge (0-100)}
                           {--compact : Show only charge/discharge actions (skip idle)}
                           {--hours= : Show specific hours only (e.g., "06-18" for 6 AM to 6 PM)}';

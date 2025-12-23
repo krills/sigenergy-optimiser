@@ -16,17 +16,43 @@ Optimize an 8 kWh battery system in Stockholm using:
 - **Laravel + React** for monitoring and control
 
 ## Current Implementation Status
-✅ **Battery Controller**: 15-minute optimization cycles with BatteryController.php
-✅ **Price Integration**: Multi-provider system with Nord Pool, Vattenfall, and mgrey.se
-✅ **Dashboard**: Real-time monitoring with price charts and battery schedule
-✅ **Database**: Battery session and history tracking
-✅ **Commands**: Testing and optimization commands
+✅ **Battery Controller**: 15-minute optimization cycles with separation of concerns
+✅ **Price Integration**: Multi-provider system with mgrey.se (ENTSO-E) as primary provider
+✅ **Dashboard**: Real-time monitoring with price charts and battery schedule  
+✅ **Database**: Battery history tracking with 15-minute intervals
+✅ **Commands**: Production-ready optimization commands
 
-## Key Services
-- `BatteryController`: Main optimization engine with 15-min cycles
-- `BatteryPlanner`: Price analysis and schedule generation
-- `ElectricityPriceAggregator`: Multi-provider price consensus
-- `SigenEnergyApiService`: API wrapper for battery control
+## Key Services Architecture
+
+### **BatteryControllerCommand** (Orchestration & Safety)
+- **Purpose**: System orchestration, safety checks, and command execution
+- **Responsibilities**: 
+  - Fetch system state from Sigenergy API
+  - Coordinate with BatteryPlanner for decisions
+  - Apply safety overrides (SOC limits, operational constraints)
+  - Execute commands via Sigenergy API
+  - Log results to database
+- **Command**: `php artisan app:send-instruction`
+
+### **BatteryPlanner** (Price-Based Optimization)
+- **Purpose**: Pure price analysis and optimization decisions
+- **Responsibilities**:
+  - Analyze electricity price patterns (3-tier system)
+  - Calculate optimal charge/discharge timing
+  - Factor in current SOC, solar production, and load
+  - Target 5kW consistent grid consumption during charging
+  - Return comprehensive decision with price context
+- **Emergency Logic**: SOC ≤ 10% triggers immediate charging
+
+### **SigenEnergyApiService** (Hardware Interface)
+- **Purpose**: Direct communication with Sigenergy Cloud API
+- **Capabilities**: MQTT and REST API support for real-time control
+- **Rate Limits**: Respects 5-minute intervals between commands
+
+### **Price Provider Integration**
+- **Primary**: mgrey.se (ENTSO-E Transparency Platform)
+- **Fallback**: Multiple provider consensus system available
+- **Real-time**: 15-minute interval pricing for SE3 (Stockholm) zone
 
 ## System Configuration
 - **Location**: Stockholm, Sweden (SE3 pricing zone)
@@ -319,86 +345,105 @@ $mqttClient->subscribe('alarms/[SYSTEM_ID]', function($alarm) {
 
 ## Current Implementation
 
-### Core Services
-- `BatteryController`: 15-minute optimization cycles with immediate decisions
-- `BatteryPlanner`: Price analysis and 24-hour scheduling
-- `ElectricityPriceAggregator`: Multi-provider price system with consensus voting
-- `SigenEnergyApiService`: API integration with error handling
+### **Decision Flow Architecture**
+1. **BatteryControllerCommand** fetches system state (SOC, solar, load)
+2. **BatteryPlanner** analyzes prices and returns optimal decision with context
+3. **Controller** applies safety checks and operational overrides
+4. **Final decision** executed via Sigenergy API (MQTT preferred)
+5. **Results logged** to BatteryHistory for analysis and cost tracking
+
+### **Price-Based Optimization Strategy**
+- **3-Tier Pricing**: Cheapest 33% → Charge, Middle 33% → Context-dependent, Expensive 33% → Discharge
+- **Grid Load Management**: Target 5kW consumption during charging
+- **Emergency Override**: SOC ≤ 10% forces immediate charging regardless of price
+- **Evening Logic**: After 8 PM, allow discharge during middle-price periods
 
 ### Available Commands
 ```bash
-# Test battery optimization
-php artisan battery:controller
+# Production battery optimization
+php artisan app:send-instruction --force
 
-# Test price providers
-php artisan prices:multi-test --consensus
+# Dry-run testing (safe)
+php artisan app:send-instruction --dry-run
 
-# Show battery schedule
-php artisan battery:schedule
+# Test with specific system
+php artisan app:send-instruction --system-id=YOUR_SYSTEM_ID
 
-# Test MQTT connection
-php artisan test:mqtt
+# Legacy commands (deprecated)
+# php artisan battery:controller
+# php artisan send-instruction
 ```
 
 ### Database Models
-- `BatterySession`: Track charging/discharging sessions
-- `BatteryHistory`: 15-minute interval logging with cost analysis
+- `BatteryHistory`: 15-minute interval logging with price analysis, SOC tracking, and cost metrics
+- **Removed**: BatterySession model (consolidated into BatteryHistory)
 
-## Multi-Provider Electricity Price System
-- **Primary**: mgrey.se (ENTSO-E Transparency Platform)
-- **Secondary**: Vattenfall (Corporate API)
-- **Voting System**: Weighted consensus with outlier detection
-- **Coverage**: Stockholm SE3 pricing zone
+### Dashboard Features
+- **Real-time SOC**: Displays actual battery state from Sigenergy API (null if unavailable)
+- **Price Charts**: 15-minute electricity price visualization with charge windows
+- **Optimization Schedule**: Visual representation of planned charge/discharge periods
+- **System Status**: Live energy flow monitoring (solar, grid, load, battery)
 
-## Usage Examples
+## Production Usage
 
-### Testing Commands
-```bash
-# Test current system state
-php artisan battery:controller
+### **Automated Scheduling**
+The system runs every 15 minutes at quarter-hour intervals (00, 15, 30, 45 minutes past each hour).
 
-# Test multi-provider prices
-php artisan prices:multi-test --consensus
-
-# Show current battery schedule
-php artisan battery:schedule
-
-# Test MQTT connectivity
-php artisan test:mqtt
-```
-
-### Production Commands
-```bash
-# Manual optimization (dry-run)
-php artisan send-instruction --dry-run
-
-# Force execution outside normal schedule
-php artisan send-instruction --force
-
-# Use specific system ID
-php artisan send-instruction --system-id=YOUR_SYSTEM_ID
-```
-
-### Automated Scheduling
-The BatteryControllerCommand includes built-in scheduling that runs every 15 minutes at quarter-hour intervals (00, 15, 30, 45 minutes past each hour).
-
-**Activation**: Ensure Laravel's scheduler is running via system cron:
+**Setup cron job**:
 ```bash
 # Add to crontab: crontab -e
 * * * * * cd /path/to/solapp && php artisan schedule:run >> /dev/null 2>&1
 ```
 
-**Manual override**:
+### **Manual Execution**
 ```bash
-# Force execution outside normal schedule
-php artisan send-instruction --force
+# Production optimization (live API calls)
+php artisan app:send-instruction --force
 
-# Test with dry-run
-php artisan send-instruction --dry-run
+# Safe testing (no API calls)
+php artisan app:send-instruction --dry-run --force
+
+# Specific system override
+php artisan app:send-instruction --system-id=YUFYB1763464060 --force
 ```
 
-### Dashboard Features
-- Real-time energy flow monitoring
-- Electricity price charts with optimization intervals
-- Battery optimization schedule display
-- Multi-provider price consensus status
+### **Decision Examples**
+```bash
+# Emergency charging (SOC ≤ 10%)
+🎯 Final Decision: CHARGE
+⚡ Power: 3.0 kW
+🧠 Reason: Emergency charge - SOC critically low (targeting 5.0kW grid load)
+
+# Price-based charging (cheap periods)
+🎯 Final Decision: CHARGE  
+⚡ Power: 2.3 kW
+🧠 Reason: Very cheap price: 0.125 SEK/kWh (targeting 5.0kW grid load)
+
+# Conservative idle (normal prices)
+🎯 Final Decision: IDLE
+⚡ Power: 0.0 kW
+🧠 Reason: Price in middle tier, conserving for peak periods
+```
+
+### **Safety Overrides**
+The controller can override planner decisions for safety:
+- **Never charge** above 95% SOC
+- **Never discharge** below 10% SOC  
+- **Time-based restrictions** (if implemented)
+- **System health checks** (if API reports errors)
+
+## Development & Testing
+
+### **Legacy Commands (Deprecated)**
+These commands may still work but are not actively maintained:
+```bash
+# php artisan battery:controller          # Use app:send-instruction instead
+# php artisan send-instruction            # Renamed to app:send-instruction  
+# php artisan prices:multi-test           # Price testing (may work)
+# php artisan battery:schedule            # Schedule display (may work)
+```
+
+### **Database Migration Notes**
+- **Removed**: `battery_sessions` table and foreign key constraints
+- **Active**: `battery_history` table with 15-minute interval tracking
+- **Migration**: Cost tracking and price analysis fields added

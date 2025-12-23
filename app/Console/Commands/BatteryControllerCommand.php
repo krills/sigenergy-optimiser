@@ -12,10 +12,12 @@ use Illuminate\Support\Facades\Log;
 
 class BatteryControllerCommand extends Command
 {
-    protected $signature = 'send-instruction
+    protected $signature = 'app:send-instruction
                             {--dry-run : Show what would be done without executing}
                             {--force : Force execution even outside normal schedule}
-                            {--system-id= : Sigenergy system ID to control}';
+                            {--system-id= : Sigenergy system ID to control}
+                            {--target-grid=6 : Target grid consumption during charging (kW)}
+                            {--charge-power=4 : Maximum charging power (kW)}';
 
     protected $description = 'Execute battery optimization every 15 minutes (production controller)';
 
@@ -58,43 +60,49 @@ class BatteryControllerCommand extends Command
             $systemState = $this->getCurrentSystemState($systemId);
             $this->displaySystemState($systemState);
 
-            // 3. Get current electricity prices
+            // 3. Get current electricity prices and make decision
             $this->line('💰 Fetching electricity prices...');
             $prices = $this->priceApi->getDayAheadPrices();
             if (empty($prices)) {
                 throw new \Exception('No price data available from price provider');
             }
 
-            $currentPrice = $this->getCurrentIntervalPrice($prices);
-            $this->line("💡 Current price: " . number_format($currentPrice, 3) . " SEK/kWh");
+            // 4. Floor negative prices for optimization (preserve originals for logging)
+            $flooredPrices = array_map(function($priceData) {
+                $flooredData = $priceData;
+                $flooredData['value'] = max(0, $priceData['value']); // Floor to minimum 0
+                $flooredData['original_value'] = $priceData['value']; // Preserve original
+                return $flooredData;
+            }, $prices);
 
-            // 4. Ask BatteryPlanner for recommendation
-            $this->line('🧠 Asking BatteryPlanner for recommendation...');
-            $plannerDecision = $this->planner->makeImmediateDecision(
-                $prices,
-                $systemState['current_soc'],
-                $systemState['solar_power'],
-                $systemState['load_power']
-            );
+            // 5. Ask BatteryPlanner for pure price-based recommendation
+            $this->line('🧠 Asking BatteryPlanner for price analysis...');
+            $priceRecommendation = $this->planner->makeImmediateDecision($flooredPrices);
+            
+            // 6. Apply operational logic (SOC, grid, load) to price recommendation
+            $this->line('⚙️ Applying operational constraints...');
+            $plannerDecision = $this->applyOperationalLogic($priceRecommendation, $systemState);
 
-            $this->displayPlannerDecision($plannerDecision);
+            // 7. Controller safety checks and final decision
+            $finalDecision = $this->applyControllerSafetyChecks($plannerDecision, $systemState);
 
-            // 5. Execute decision (or simulate in dry-run)
+            $this->displayFinalDecision($finalDecision);
+
+            // 6. Execute decision (or simulate in dry-run)
             if ($isDryRun) {
-                $this->warn('🔸 DRY RUN: Would execute ' . $plannerDecision['action'] . ' command');
+                $this->warn('🔸 DRY RUN: Would execute ' . $finalDecision['action'] . ' command');
                 $executionResult = ['success' => true, 'simulated' => true];
             } else {
                 $this->line('⚡ Executing command to Sigenergy API...');
-                $executionResult = $this->executeCommand($systemId, $plannerDecision);
+                $executionResult = $this->executeCommand($systemId, $finalDecision);
             }
 
-            // 6. Log decision and results to database
+            // 7. Log decision and results to database
             $this->line('📝 Logging to database...');
             $historyRecord = $this->logOptimizationCycle(
                 $systemId,
-                $plannerDecision,
+                $finalDecision,
                 $systemState,
-                $currentPrice,
                 $prices,
                 $executionResult,
                 $isDryRun
@@ -326,13 +334,149 @@ class BatteryControllerCommand extends Command
     }
 
     /**
+     * Apply operational logic (SOC, grid, load) to price-based recommendation
+     */
+    private function applyOperationalLogic(array $priceRecommendation, array $systemState): array
+    {
+        $currentSOC = $systemState['current_soc'];
+        $solarPower = $systemState['solar_power'];
+        $loadPower = $systemState['load_power'];
+        $netLoad = $loadPower - $solarPower; // Positive = need power, negative = excess
+        $currentGridConsumption = $netLoad;
+        
+        // Start with price recommendation
+        $decision = $priceRecommendation;
+        
+        // Emergency charging takes absolute priority
+        if ($currentSOC <= 10) {
+            return [
+                'action' => 'charge',
+                'power' => $this->calculateOptimalChargePower($currentGridConsumption),
+                'duration' => 15,
+                'reason' => sprintf('Emergency charge - SOC critically low (%.1f%%)', $currentSOC),
+                'confidence' => 'high',
+                'override_reason' => 'Emergency SOC override'
+            ];
+        }
+        
+        // SOC-based constraints on price recommendation
+        if ($decision['action'] === 'charge') {
+            if ($currentSOC >= 95) {
+                $decision['action'] = 'idle';
+                $decision['power'] = 0;
+                $decision['reason'] = 'Price suggests charging but SOC too high (≥95%)';
+                $decision['confidence'] = 'high';
+            } else {
+                // Adjust charging power based on grid consumption target
+                $decision['power'] = $this->calculateOptimalChargePower($currentGridConsumption);
+            }
+        }
+        
+        if ($decision['action'] === 'discharge') {
+            if ($currentSOC <= 20) {
+                $decision['action'] = 'idle';
+                $decision['power'] = 0;
+                $decision['reason'] = sprintf('Price suggests discharging but SOC too low (%.1f%% ≤ 20%%)', $currentSOC);
+                $decision['confidence'] = 'high';
+            } else {
+                // Adjust discharge power based on load
+                $maxDischargePower = (float) $this->option('charge-power'); // Use same power limit for discharge
+                $decision['power'] = min($maxDischargePower, max(1.0, $netLoad));
+            }
+        }
+        
+        // If price recommendation is idle, check for load balancing needs
+        if ($decision['action'] === 'idle') {
+            // High excess solar - absorb with charging
+            if ($netLoad < -2.0 && $currentSOC < 85) {
+                $maxChargePower = (float) $this->option('charge-power');
+                $decision = [
+                    'action' => 'charge',
+                    'power' => min($maxChargePower, abs($netLoad)),
+                    'duration' => 15,
+                    'reason' => sprintf('Absorbing excess solar (%.1fkW), price neutral', abs($netLoad)),
+                    'confidence' => 'medium'
+                ];
+            }
+            
+            // High load demand - assist with discharging
+            if ($netLoad > 2.0 && $currentSOC > 25) {
+                $maxDischargePower = (float) $this->option('charge-power'); // Use same limit
+                $decision = [
+                    'action' => 'discharge',
+                    'power' => min($maxDischargePower, $netLoad),
+                    'duration' => 15,
+                    'reason' => sprintf('Supporting high load (%.1fkW), price neutral', $netLoad),
+                    'confidence' => 'medium'
+                ];
+            }
+        }
+        
+        return $decision;
+    }
+
+    /**
+     * Calculate optimal charging power targeting configured grid consumption
+     */
+    private function calculateOptimalChargePower(float $currentGridConsumption): float
+    {
+        $targetGridConsumption = (float) $this->option('target-grid');
+        $maxChargePower = (float) $this->option('charge-power');
+        return max(1.0, min($maxChargePower, $targetGridConsumption - $currentGridConsumption));
+    }
+
+    /**
+     * Apply controller safety checks to planner decision
+     */
+    private function applyControllerSafetyChecks(array $plannerDecision, array $systemState): array
+    {
+        $finalDecision = $plannerDecision;
+
+        if ($finalDecision['action'] === 'discharge' && $systemState['current_soc'] <= 10) {
+            $finalDecision['action'] = 'idle';
+            $finalDecision['power'] = 0;
+            $finalDecision['reason'] = 'Controller override: SOC too low for discharging';
+            $finalDecision['confidence'] = 'high';
+        }
+
+        return $finalDecision;
+    }
+
+    /**
+     * Display the final controller decision
+     */
+    private function displayFinalDecision(array $decision): void
+    {
+        $action = strtoupper($decision['action']);
+        $actionColor = match($decision['action']) {
+            'charge' => 'green',
+            'discharge' => 'red',
+            'idle' => 'gray',
+            default => 'yellow'
+        };
+
+        $this->line("   🎯 Final Decision: <fg={$actionColor};options=bold>{$action}</>");
+
+        if (isset($decision['power'])) {
+            $this->line("   ⚡ Power: " . number_format($decision['power'], 1) . " kW");
+        }
+
+        $this->line("   🧠 Reason: " . ($decision['reason'] ?? 'N/A'));
+        $this->line("   📊 Confidence: " . ($decision['confidence'] ?? 'medium'));
+
+        // Show current price if available in decision
+        if (isset($decision['current_price'])) {
+            $this->line("   💡 Current price: " . number_format($decision['current_price'], 3) . " SEK/kWh");
+        }
+    }
+
+    /**
      * Log optimization cycle to database
      */
     private function logOptimizationCycle(
         string $systemId,
         array $decision,
         array $systemState,
-        float $currentPrice,
         array $allPrices,
         array $executionResult,
         bool $isDryRun
@@ -340,12 +484,15 @@ class BatteryControllerCommand extends Command
         $now = now();
         $intervalStart = $now->copy()->startOfHour()->addMinutes(floor($now->minute / 15) * 15);
 
-        // Determine price tier
-        $priceTier = $this->determinePriceTier($currentPrice, $allPrices);
-        $dailyAvgPrice = array_sum(array_column($allPrices, 'value')) / count($allPrices);
+        // Extract price information from decision (now handled by BatteryPlanner)
+        $currentPrice = $decision['current_price'] ?? 0.50;
+        $priceContext = $decision['price_context'] ?? [];
+        $dailyAvgPrice = $priceContext['average_price'] ?? array_sum(array_column($allPrices, 'value')) / count($allPrices);
 
-        // Calculate current charge cost (this is the key addition)
-        $chargeTracking = $this->calculateCurrentChargeMetrics($systemId, $systemState['current_soc'], $decision, $currentPrice);
+        // Determine price tier (simplified - BatteryPlanner should handle this)
+        $priceTier = $this->determinePriceTier($currentPrice, $allPrices);
+
+        $chargeTracking = $this->calculateCurrentChargeMetrics($systemId, $systemState['current_soc']);
 
         // Create history record
         $historyData = [
@@ -391,7 +538,7 @@ class BatteryControllerCommand extends Command
     /**
      * Calculate current charge cost and energy metrics
      */
-    private function calculateCurrentChargeMetrics(string $systemId, float $currentSoc, array $decision, float $currentPrice): array
+    private function calculateCurrentChargeMetrics(string $systemId, float $currentSoc): array
     {
         // Get recent charge intervals to calculate weighted average cost
         $recentChargeIntervals = BatteryHistory::forSystem($systemId)
