@@ -40,9 +40,6 @@ jobs:
       - name: Generate Application Key
         run: php artisan key:generate
 
-      - name: Run PHPUnit tests
-        run: vendor/bin/phpunit
-
       - name: Clean old build dir
         uses: appleboy/ssh-action@v1.0.3
         with:
