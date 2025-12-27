@@ -86,6 +86,9 @@ class AdminDashboardController extends Controller
         // Get current battery mode from Sigenergy API
         $currentBatteryMode = $this->getCurrentBatteryMode($systemsData['systems'] ?? []);
 
+        // Get battery history log for debug purposes
+        $batteryHistoryLog = $this->getBatteryHistoryLog();
+
         return Inertia::render('Dashboard', [
             'authenticated' => true,
             'authError' => null,
@@ -98,7 +101,8 @@ class AdminDashboardController extends Controller
             'electricityPrices' => $pricesData,
             'batterySchedule' => $batterySchedule,
             'batteryHistory' => $batteryHistory,
-            'currentBatteryMode' => $currentBatteryMode
+            'currentBatteryMode' => $currentBatteryMode,
+            'batteryHistoryLog' => $batteryHistoryLog
         ]);
     }
 
@@ -768,6 +772,45 @@ class AdminDashboardController extends Controller
                 'error' => $e->getMessage()
             ];
         }
+    }
+
+    /**
+     * Get recent battery history entries for debug log
+     */
+    private function getBatteryHistoryLog(): array
+    {
+        return BatteryHistory::select([
+            'interval_start',
+            'action',
+            'soc_start',
+            'price_sek_kwh',
+            'home_consumption_kw',
+            'grid_import_kw',
+            'grid_export_kw',
+            'decision_factors',
+            'system_id',
+            'power_kw',
+            'decision_source'
+        ])
+        ->orderBy('interval_start', 'desc')
+        ->take(200)
+        ->get()
+        ->map(function ($record) {
+            return [
+                'timestamp' => $record->interval_start->toISOString(),
+                'action' => $record->action->value,
+                'soc_start' => $record->soc_start,
+                'price_sek' => $record->price_sek_kwh,
+                'home_consumption' => $record->home_consumption_kw,
+                'grid_import' => $record->grid_import_kw,
+                'grid_export' => $record->grid_export_kw,
+                'power_kw' => $record->power_kw,
+                'reason' => $record->decision_factors['reason'] ?? 'Unknown',
+                'system_id' => $record->system_id,
+                'decision_source' => $record->decision_source
+            ];
+        })
+        ->toArray();
     }
 
 }

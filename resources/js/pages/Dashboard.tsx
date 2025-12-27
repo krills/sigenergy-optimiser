@@ -10,7 +10,7 @@ interface RealtimeDataState {
 }
 
 function Dashboard() {
-    const { authenticated, authError, systems, lastUpdated, cacheInfo, electricityPrices, batterySchedule, batteryHistory, currentBatteryMode } = usePage<PageProps>().props;
+    const { authenticated, authError, systems, lastUpdated, cacheInfo, electricityPrices, batterySchedule, batteryHistory, currentBatteryMode, batteryHistoryLog } = usePage<PageProps>().props;
     const [realtimeData, setRealtimeData] = useState<RealtimeDataState>({});
     const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
@@ -129,7 +129,12 @@ function Dashboard() {
                             <div className="flex items-center space-x-4">
                                 {lastUpdated && (
                                     <span className="text-sm text-gray-500">
-                                        Updated: {formatDateTime(lastUpdated, { timeStyle: 'medium' })}
+                                        Updated: {formatDateTime(lastUpdated, { 
+                                            hour: '2-digit', 
+                                            minute: '2-digit', 
+                                            second: '2-digit',
+                                            hour12: false 
+                                        })}
                                     </span>
                                 )}
                                 <button
@@ -488,6 +493,71 @@ function Dashboard() {
                                         ))}
                                     </div>
                                 )}
+                            </div>
+
+                            {/* Battery History Log */}
+                            <div className="bg-white rounded-lg border border-gray-200 shadow-sm mt-8">
+                                <div className="p-6 border-b border-gray-200">
+                                    <h3 className="text-lg font-semibold text-gray-900">
+                                        🔋 Battery History Log <span className="text-sm font-normal text-gray-500">(Last 200 entries)</span>
+                                    </h3>
+                                </div>
+                                <div className="overflow-x-auto">
+                                    <table className="min-w-full divide-y divide-gray-200">
+                                        <thead className="bg-gray-50">
+                                            <tr>
+                                                <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Time</th>
+                                                <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Action</th>
+                                                <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">SOC</th>
+                                                <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Power</th>
+                                                <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Price</th>
+                                                <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Home</th>
+                                                <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Grid</th>
+                                                <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Reason</th>
+                                                <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">System</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="bg-white divide-y divide-gray-200">
+                                            {(batteryHistoryLog || []).map((entry: any, index: number) => (
+                                                <tr key={index} className="hover:bg-gray-50">
+                                                    <td className="px-3 py-2 text-xs text-gray-900">
+                                                        {formatDateTime(entry.timestamp, { 
+                                                            month: 'short', 
+                                                            day: 'numeric', 
+                                                            hour: '2-digit', 
+                                                            minute: '2-digit',
+                                                            hour12: false 
+                                                        })}
+                                                    </td>
+                                                    <td className="px-3 py-2 text-xs">
+                                                        <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${
+                                                            entry.action === 'charge' ? 'bg-green-100 text-green-800' :
+                                                            entry.action === 'discharge' ? 'bg-orange-100 text-orange-800' :
+                                                            'bg-gray-100 text-gray-800'
+                                                        }`}>
+                                                            {entry.action}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-3 py-2 text-xs text-gray-900">{entry.soc_start}%</td>
+                                                    <td className="px-3 py-2 text-xs text-gray-900">{entry.power_kw}kW</td>
+                                                    <td className="px-3 py-2 text-xs text-gray-900">{Number(entry.price_sek).toFixed(3)}</td>
+                                                    <td className="px-3 py-2 text-xs text-gray-900">{entry.home_consumption}kW</td>
+                                                    <td className="px-3 py-2 text-xs">
+                                                        <span className={entry.grid_import > 0 ? 'text-red-600' : entry.grid_export > 0 ? 'text-green-600' : 'text-gray-600'}>
+                                                            {entry.grid_import > 0 ? `↑${entry.grid_import}kW` : 
+                                                             entry.grid_export > 0 ? `↓${entry.grid_export}kW` : 
+                                                             '0kW'}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-3 py-2 text-xs text-gray-600 max-w-xs truncate" title={entry.reason}>
+                                                        {entry.reason}
+                                                    </td>
+                                                    <td className="px-3 py-2 text-xs text-gray-500">{entry.system_id}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
                             </div>
 
                             {/* Footer */}

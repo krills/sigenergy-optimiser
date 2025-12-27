@@ -173,6 +173,19 @@ export interface PageProps {
   batterySchedule?: BatterySchedule;
   batteryHistory?: BatteryHistory;
   currentBatteryMode?: CurrentBatteryMode;
+  batteryHistoryLog?: Array<{
+    timestamp: string;
+    action: string;
+    soc_start: number;
+    price_sek: number;
+    home_consumption: number;
+    grid_import: number;
+    grid_export: number;
+    power_kw: number;
+    reason: string;
+    system_id: string;
+    decision_source: string;
+  }>;
   // Index signature to satisfy Inertia's PageProps constraint
   [key: string]: any;
 }

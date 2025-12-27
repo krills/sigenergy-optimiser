@@ -5,4 +5,4 @@ Calculates when to optimally charge/discharge/idle battery based on daily price 
 Runs artisan command through scheduler/cron to send appropriate command to Sigenergy station.
 
 1. Add sigenergy api details to .env
-2. Add sigenergy MCPP certs to /cert
+2. Add sigenergy MCPP certs to /cert. You need to download them from sigenery admin dashboard after "onboarding" the system ID to mqtt service
