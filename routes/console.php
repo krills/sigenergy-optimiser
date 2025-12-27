@@ -6,4 +6,4 @@ use Illuminate\Support\Facades\Schedule;
 Schedule::command(BatteryControllerCommand::SIGNATURE)
     ->everyFifteenMinutes()
     ->withoutOverlapping()
-    ->appendOutputTo(storage_path('logs/battery-optimization.log'));
+    ->appendOutputTo(storage_path('logs/battery-controller.log'));
