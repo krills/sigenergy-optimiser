@@ -72,7 +72,6 @@ return [
             'days' => env('LOG_DAILY_DAYS', 14),
             'date_format' => 'Y-m-d',
             'replace_placeholders' => true,
-            'permission' => 0664
         ],
 
         'slack' => [
