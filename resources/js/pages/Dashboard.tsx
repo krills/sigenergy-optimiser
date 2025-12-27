@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Head, usePage, router } from '@inertiajs/react';
 import type { PageProps, SigenEnergySystem, EnergyFlowData, ApiResponse } from '@/types/sigenergy';
+import { BatteryInstruction } from '@/types/BatteryInstruction';
 import { formatNumber, formatDateTime, getStatusClassName } from '@/utils/formatters';
 import PriceChart from '@/components/PriceChart';
 
@@ -167,17 +168,17 @@ function Dashboard() {
                                                 <div className="flex items-center space-x-2">
                                                     <span className="font-medium text-gray-700">Current Mode:</span>
                                                     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${
-                                                        currentBatteryMode.mode === 'charge'
+                                                        currentBatteryMode.mode === BatteryInstruction.CHARGE
                                                             ? 'bg-green-100 text-green-800'
-                                                            : currentBatteryMode.mode === 'discharge'
+                                                            : currentBatteryMode.mode === BatteryInstruction.DISCHARGE
                                                             ? 'bg-orange-100 text-orange-800'
-                                                            : currentBatteryMode.mode === 'idle'
+                                                            : currentBatteryMode.mode === BatteryInstruction.IDLE
                                                             ? 'bg-gray-100 text-gray-800'
                                                             : 'bg-red-100 text-red-800'
                                                     }`}>
-                                                        {currentBatteryMode.mode === 'charge' && '⚡'}
-                                                        {currentBatteryMode.mode === 'discharge' && '🔋'}
-                                                        {currentBatteryMode.mode === 'idle' && '⏸️'}
+                                                        {currentBatteryMode.mode === BatteryInstruction.CHARGE && '⚡'}
+                                                        {currentBatteryMode.mode === BatteryInstruction.DISCHARGE && '🔋'}
+                                                        {currentBatteryMode.mode === BatteryInstruction.IDLE && '⏸️'}
                                                         {currentBatteryMode.mode === 'unknown' && '❓'}
                                                         {' '}{currentBatteryMode.mode}
                                                     </span>

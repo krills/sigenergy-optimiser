@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Services\BatteryPlanner;
 use App\Contracts\PriceProviderInterface;
+use App\Enum\SigEnergy\BatteryInstruction;
 use Illuminate\Console\Command;
 use Carbon\Carbon;
 
@@ -104,7 +105,7 @@ class ShowBatterySchedule extends Command
             }
 
             // Skip idle actions if compact mode
-            if ($compact && $entry['action'] === 'idle') {
+            if ($compact && $entry['action'] === BatteryInstruction::IDLE) {
                 continue;
             }
 
@@ -205,18 +206,14 @@ class ShowBatterySchedule extends Command
         }
     }
 
-    private function formatAction(string $action): string
+    private function formatAction(BatteryInstruction $action): string
     {
-        switch ($action) {
-            case 'charge':
-                return '<fg=blue;options=bold>🔋 CHARGE</>';
-            case 'discharge':
-                return '<fg=magenta;options=bold>⚡ DISCHARGE</>';
-            case 'idle':
-                return '<fg=gray>😴 IDLE</>';
-            default:
-                return $action;
-        }
+        return match ($action) {
+            BatteryInstruction::CHARGE => '<fg=blue;options=bold>🔋 CHARGE</>',
+            BatteryInstruction::DISCHARGE => '<fg=magenta;options=bold>⚡ DISCHARGE</>',
+            BatteryInstruction::IDLE => '<fg=gray>😴 IDLE</>',
+            default => $action->value,
+        };
     }
 
     private function truncateReason(string $reason): string

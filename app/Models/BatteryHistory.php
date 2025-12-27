@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use App\Enum\SigEnergy\BatteryInstruction;
 use Carbon\Carbon;
 
 class BatteryHistory extends Model
@@ -39,6 +40,7 @@ class BatteryHistory extends Model
     protected $casts = [
         'interval_start' => 'datetime',
         'date' => 'date',
+        'action' => BatteryInstruction::class,
         'soc_start' => 'decimal:2',
         'power_kw' => 'decimal:3',
         'price_sek_kwh' => 'decimal:5',
@@ -120,7 +122,7 @@ class BatteryHistory extends Model
         $interval = self::create($data);
 
         // Update cumulative cost if charging
-        if ($interval->action === 'charge') {
+        if ($interval->action === BatteryInstruction::CHARGE) {
             //$interval->updateCumulativeChargeCost();
         }
 

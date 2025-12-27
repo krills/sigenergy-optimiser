@@ -103,6 +103,13 @@ export interface BatterySchedule {
   };
   generated_at?: string;
   current_soc?: number;
+  priceTiers?: {
+    cheapest_threshold: number;
+    middle_threshold: number;
+    cheapest_tier: [number, number];
+    middle_tier: [number, number];
+    expensive_tier: [number, number];
+  };
   error?: string | null;
 }
 
@@ -115,11 +122,12 @@ export interface BatteryHistory {
   charge_history: Array<{
     timestamp: number;
     power: number;
-    energy_kwh: number;
+    energy_kwh?: number;
     price: number;
+    action: string;
     decision_source: string;
     interval_start: string;
-    interval_end: string;
+    interval_end?: string;
   }>;
   total_intervals: number;
   charge_intervals: number;

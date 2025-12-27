@@ -6,6 +6,9 @@
 5. Use services and interfaces through dependency injection.
 6. Avoid duplicate code - break out reusable logic into helpers.
 7. Don't build or serve while developing - assume they're running in parallel.
+8. Never expand scope arbitrarily, if you think a feature might benefit from some additional flexibility or that a certain function can be expanded to serve more purposes, always ask first
+9. Only build exactly what is requested. Never expand scope to build a larger or more inclusive feature even if it might make sense.
+10. Ask for more input if a feature wasn't specified enough instead of guessing what puzzle pieces are missing
 
 # Stockholm Solar Battery Optimization
 

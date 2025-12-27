@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import Highcharts from 'highcharts';
 import HighchartsReact from 'highcharts-react-official';
+import { BatteryInstruction } from '@/types/BatteryInstruction';
 
 interface PriceData {
   timestamp: number; // Unix timestamp
@@ -33,6 +34,7 @@ interface BatteryHistory {
     timestamp: number;
     power: number;
     price: number;
+    action: string;
     decision_source: string;
     interval_start: string;
   }>;
@@ -138,7 +140,7 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
             to: priceTiers.cheapest_tier[1],
             color: 'rgba(34, 197, 94, 0.15)',
             label: {
-              text: 'Cheapest Third',
+              text: 'Cheap',
               style: { color: '#22c55e', fontSize: '10px' }
             }
           },
@@ -147,7 +149,7 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
             to: priceTiers.middle_tier[1],
             color: 'transparent',
             label: {
-              text: 'Middle Third',
+              text: 'Average',
               style: { color: '#6b7280', fontSize: '10px' }
             }
           },
@@ -156,29 +158,14 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
             to: priceTiers.expensive_tier[1],
             color: 'rgba(239, 68, 68, 0.15)',
             label: {
-              text: 'Most Expensive Third',
+              text: 'Expensive',
               style: { color: '#ef4444', fontSize: '10px' }
             }
           }
         ] : []
       },
       {
-        // Secondary y-axis for charging power
-        title: {
-          text: 'Charging Power (kW)',
-          style: { color: '#3b82f6', fontSize: '12px' }
-        },
-        labels: {
-          format: '{value:.1f}',
-          style: { color: '#3b82f6', fontSize: '11px' }
-        },
-        opposite: true,
-        gridLineWidth: 0,
-        min: 0,
-        max: 5 // Typical max charging power
-      },
-      {
-        // Third y-axis for SOC percentage
+        // Secondary y-axis for SOC percentage
         title: {
           text: 'SOC (%)',
           style: { color: '#f59e0b', fontSize: '12px' }
@@ -187,11 +174,17 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
           format: '{value}%',
           style: { color: '#f59e0b', fontSize: '11px' }
         },
-        opposite: false,
+        opposite: true,
         gridLineWidth: 0,
         min: 0,
-        max: 100,
-        offset: 50 // Offset from left side to avoid collision with price axis
+        max: 100
+      },
+      {
+        // Third y-axis for battery actions (hidden)
+        visible: false,
+        min: 0,
+        max: 1,
+        gridLineWidth: 0
       }
     ],
 
@@ -220,10 +213,12 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
                 point.y! > 1.5 ? '🔴 Expensive - Use battery' :
                 '🟡 Medium price'}
             </span><br/>`;
-          } else if (point.series.name === 'Battery Charging') {
+          } else if (point.series.name === 'Planned Charging') {
             tooltip += `<span style="color: #3b82f6">🔋 Planned Charging: <b>${point.y?.toFixed(1)} kW</b></span><br/>`;
-          } else if (point.series.name === 'Actual Charging') {
-            tooltip += `<span style="color: #22c55e">🔋 Actually Charged: <b>${point.y?.toFixed(1)} kW</b></span><br/>`;
+          } else if (point.series.name === 'Charging') {
+            tooltip += `<span style="color: #22c55e">🔋 Charged</span><br/>`;
+          } else if (point.series.name === 'Discharging') {
+            tooltip += `<span style="color: #f59e0b">⚡ Discharged</span><br/>`;
           } else if (point.series.name === 'Battery SOC') {
             tooltip += `<span style="color: #f59e0b">⚡ SOC: <b>${point.y?.toFixed(1)}%</b></span><br/>`;
           }
@@ -282,18 +277,17 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
         zones: [
           {
             value: 0.15,
-            color: '#22c55e' // Green for cheap prices
+            color: '#e66bd9' // Green for cheap prices
           },
           {
             value: 1.5,
-            color: '#f59e0b' // Orange for medium prices
+            color: '#b74bba' // Orange for medium prices
           },
           {
-            color: '#ef4444' // Red for expensive prices
+            color: '#911280' // Red for expensive prices
           }
         ]
       },
-      // SOC curve - always show if we have data
       ...((batteryHistory?.soc_history?.length ?? 0) > 0 ? [{
         type: 'line' as const,
         name: 'Battery SOC',
@@ -302,7 +296,7 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
           soc.soc
         ]),
         color: '#f59e0b',
-        yAxis: 2, // Use third y-axis for SOC percentage
+        yAxis: 1, // Use secondary y-axis for SOC percentage
         lineWidth: 3,
         marker: {
           enabled: true,
@@ -313,35 +307,53 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
           valueSuffix: '%'
         }
       }] : []),
-      // Planned charging intervals (blue with lower opacity)
       ...(chargeIntervals.length > 0 ? [{
         type: 'column' as const,
         name: 'Planned Charging',
         data: chargeIntervals.map(interval => [
-          interval.timestamp, // Already in milliseconds
-          interval.power
+          interval.timestamp,
+          0.5
         ]),
-        color: 'rgba(59, 130, 246, 0.4)', // Blue with lower transparency for planned
-        yAxis: 1, // Use secondary y-axis for power
+        color: 'rgba(33,197,94,0.4)',
+        yAxis: 2,
+        pointWidth: 10,
+        pointPlacement: 0,
         tooltip: {
-          valueSuffix: ' kW'
+          format: '<b>Planned Charging</b>'
         },
-        zIndex: 1 // Lower z-index so actual charging appears on top
+        zIndex: -1
       }] : []),
-      // Actual charging intervals (greener color with higher opacity)
-      ...((batteryHistory?.charge_history?.length ?? 0) > 0 ? [{
+      ...((batteryHistory?.charge_history?.filter(h => h.action === BatteryInstruction.CHARGE)?.length ?? 0) > 0 ? [{
         type: 'column' as const,
-        name: 'Actual Charging',
-        data: batteryHistory!.charge_history.map(charge => [
-          charge.timestamp, // Already in milliseconds
-          charge.power
+        name: 'Charging',
+        data: batteryHistory!.charge_history.filter(h => h.action === BatteryInstruction.CHARGE).map(charge => [
+          charge.timestamp,
+          0.5
         ]),
-        color: 'rgba(34, 197, 94, 0.8)', // Green with higher opacity for actual
-        yAxis: 1, // Use secondary y-axis for power
+        color: 'rgb(22,140,66)',
+        yAxis: 2,
+        pointWidth: 10,
+        pointPlacement: 0,
         tooltip: {
-          valueSuffix: ' kW'
+          format: '<b>Charged</b>'
         },
-        zIndex: 2 // Higher z-index so it appears on top of planned charging
+        zIndex: 0
+      }] : []),
+      ...((batteryHistory?.charge_history?.filter(h => h.action === BatteryInstruction.DISCHARGE)?.length ?? 0) > 0 ? [{
+        type: 'column' as const,
+        name: 'Discharging',
+        data: batteryHistory!.charge_history.filter(h => h.action === BatteryInstruction.DISCHARGE).map(charge => [
+          charge.timestamp,
+          0.5
+        ]),
+        color: 'rgb(245, 158, 11)',
+        yAxis: 2,
+        pointWidth: 10,
+        pointPlacement: 0,
+        tooltip: {
+          format: '<b>Discharged</b>'
+        },
+        zIndex: 0
       }] : [])
     ],
 

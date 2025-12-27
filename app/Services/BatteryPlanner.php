@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use Carbon\Carbon;
+use App\Enum\SigEnergy\BatteryInstruction;
 use Illuminate\Support\Facades\Log;
 
 class BatteryPlanner
@@ -71,7 +72,7 @@ class BatteryPlanner
             $savings = $chargeWindow['savings'] ?? 0;
 
             $decision = [
-                'action' => 'charge',
+                'action' => BatteryInstruction::CHARGE,
                 'reason' => sprintf("Charge window: %.3f SEK/kWh (%s tier, %.3f SEK savings)",
                                   $currentPrice, $tier, $savings),
             ];
@@ -81,14 +82,14 @@ class BatteryPlanner
             $earnings = $dischargeWindow['earnings'] ?? 0;
 
             $decision = [
-                'action' => 'discharge',
+                'action' => BatteryInstruction::DISCHARGE,
                 'reason' => sprintf("Discharge window: %.3f SEK/kWh (expensive tier, %.3f SEK premium)",
                                   $currentPrice, $earnings),
             ];
         } else {
             // Not in any specific window - idle
             $decision = [
-                'action' => 'idle',
+                'action' => BatteryInstruction::IDLE,
                 'reason' => sprintf("Idle: %.3f SEK/kWh (neutral tier)", $currentPrice),
             ];
         }
@@ -164,7 +165,7 @@ class BatteryPlanner
                         'savings' => $middleThird - $price,
                         'tier' => $tier,
                         'time_restricted' => ($tier === 'middle' && $hour >= 18),
-                        'priority' => $this->calculatePriority($price, $stats, 'charge')
+                        'priority' => $this->calculatePriority($price, $stats, BatteryInstruction::CHARGE->value)
                     ];
                 }
             }
@@ -178,7 +179,7 @@ class BatteryPlanner
                     'end_time' => $timestamp->copy()->addMinutes(15),
                     'earnings' => $price - $middleThird, // How much more expensive than middle tier
                     'tier' => 'expensive',
-                    'priority' => $this->calculatePriority($price, $stats, 'discharge')
+                    'priority' => $this->calculatePriority($price, $stats, BatteryInstruction::DISCHARGE->value)
                 ];
             }
         }
@@ -245,7 +246,7 @@ class BatteryPlanner
     /**
      * Determine action for a specific 15-minute interval (pure price-based, consistent with makeImmediateDecision)
      */
-    private function determineIntervalAction(float $price, float $currentSOC, array $priceAnalysis, int $intervalIndex): string
+    private function determineIntervalAction(float $price, float $currentSOC, array $priceAnalysis, int $intervalIndex): BatteryInstruction
     {
         // Check if this interval is in charge or discharge windows (same logic as the new method)
         $chargeWindows = $priceAnalysis['charge_windows'];
@@ -255,21 +256,21 @@ class BatteryPlanner
         $inDischargeWindow = collect($dischargeWindows)->contains('interval', $intervalIndex);
 
         if ($inChargeWindow) {
-            return 'charge';
+            return BatteryInstruction::CHARGE;
         }
 
         if ($inDischargeWindow) {
-            return 'discharge';
+            return BatteryInstruction::DISCHARGE;
         }
 
         // Not in any specific window - default to idle
-        return 'idle';
+        return BatteryInstruction::IDLE;
     }
 
     /**
      * Get human-readable reason for action
      */
-    private function getActionReason(string $action, float $price, array $priceAnalysis, int $intervalIndex): string
+    private function getActionReason(BatteryInstruction $action, float $price, array $priceAnalysis, int $intervalIndex): string
     {
         $stats = $priceAnalysis['stats'];
         $chargeWindows = $priceAnalysis['charge_windows'];
@@ -288,7 +289,7 @@ class BatteryPlanner
         }
 
         switch ($action) {
-            case 'charge':
+            case BatteryInstruction::CHARGE:
                 if ($chargeWindow) {
                     $tier = $chargeWindow['tier'];
                     $savings = $chargeWindow['savings'];
@@ -304,14 +305,14 @@ class BatteryPlanner
                     }
                 }
                 return sprintf('Emergency charge: %.3f SEK/kWh', $price);
-            case 'discharge':
+            case BatteryInstruction::DISCHARGE:
                 if ($dischargeWindow) {
                     $earnings = $dischargeWindow['earnings'];
                     return sprintf('Discharging: %.3f SEK/kWh (expensive tier, %.3f SEK premium)',
                                   $price, $earnings);
                 }
                 return sprintf('Discharging: %.3f SEK/kWh', $price);
-            case 'idle':
+            case BatteryInstruction::IDLE:
             default:
                 if ($chargeWindow) {
                     return sprintf('Idle: %.3f SEK/kWh (charging tier but SOC limit reached)', $price);
@@ -406,7 +407,7 @@ class BatteryPlanner
 
     private function calculatePriority(float $price, array $stats, string $action): float
     {
-        if ($action === 'charge') {
+        if ($action === BatteryInstruction::CHARGE->value) {
             // Lower prices = higher priority
             $maxSavings = $stats['avg'] - $stats['min'];
             $actualSavings = $stats['avg'] - $price;

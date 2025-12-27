@@ -10,6 +10,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
+use App\Enum\SigEnergy\BatteryInstruction;
 use Inertia\Inertia;
 
 class AdminDashboardController extends Controller
@@ -715,7 +716,7 @@ class AdminDashboardController extends Controller
             // Get today's battery history from database
             $today = Carbon::today();
             $historyRecords = BatteryHistory::forSystem($systemId)
-                ->forDate($today)
+                ->whereDate('interval_start', $today)
                 ->orderBy('interval_start')
                 ->get();
 
@@ -735,12 +736,13 @@ class AdminDashboardController extends Controller
                     ];
                 }
 
-                // Add charging data point if this was a charge interval
-                if ($record->action === 'charge' && $record->power_kw > 0) {
+                // Add charging/discharging data point for all decisions (even if power = 0)
+                if (in_array($record->action, [BatteryInstruction::CHARGE, BatteryInstruction::DISCHARGE])) {
                     $chargeHistory[] = [
                         'timestamp' => $timestamp,
-                        'power' => (float) $record->power_kw,
+                        'power' => $record->action === BatteryInstruction::DISCHARGE ? -(float) $record->power_kw : (float) $record->power_kw, // Negative for discharge
                         'price' => (float) $record->price_sek_kwh,
+                        'action' => $record->action->value,
                         'decision_source' => $record->decision_source,
                         'interval_start' => $record->interval_start->toISOString(),
                     ];

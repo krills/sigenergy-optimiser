@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\BatteryPlanner;
+use App\Enum\SigEnergy\BatteryInstruction;
 use App\Contracts\PriceProviderInterface;
 use App\Services\SigenEnergyApiService;
 use App\Models\BatteryHistory;
@@ -100,7 +101,7 @@ class BatteryControllerCommand extends Command
 
             // 6. Execute decision (or simulate in dry-run)
             if ($isDryRun) {
-                $this->warn('🔸 DRY RUN: Would execute ' . $finalDecision['action'] . ' command');
+                $this->warn('🔸 DRY RUN: Would execute ' . $finalDecision['action']->value . ' command');
                 $executionResult = ['success' => true, 'simulated' => true];
             } else {
                 $this->line('⚡ Executing command to Sigenergy API...');
@@ -270,19 +271,19 @@ class BatteryControllerCommand extends Command
             $apiResponse = null;
 
             switch ($action) {
-                case 'charge':
+                case BatteryInstruction::CHARGE->value:
                     $apiResponse = $this->sigenApi->forceChargeBatteryMqtt($systemId, time() + 60, $power, 15);
                     $result = $apiResponse['success'] ?? false;
                     $apiResponse['power'] = $power; // Add power to response
                     break;
 
-                case 'discharge':
+                case BatteryInstruction::DISCHARGE->value:
                     $apiResponse = $this->sigenApi->forceDischargeBatteryMqtt($systemId, time(), $power, 15);
                     $result = $apiResponse['success'] ?? false;
                     $apiResponse['power'] = $power; // Add power to response
                     break;
 
-                case 'idle':
+                case BatteryInstruction::IDLE->value:
                     $apiResponse = $this->sigenApi->setBatteryIdleMqtt($systemId, time(), 15);
                     $result = $apiResponse['success'] ?? false;
                     break;
@@ -366,7 +367,7 @@ class BatteryControllerCommand extends Command
         // Emergency charging takes absolute priority
         if ($currentSOC <= 10) {
             return [
-                'action' => 'charge',
+                'action' => BatteryInstruction::CHARGE,
                 'power' => $this->calculateOptimalChargePower($currentGridConsumption),
                 'duration' => 15,
                 'reason' => sprintf('Emergency charge - SOC critically low (%.1f%%)', $currentSOC),
@@ -376,9 +377,9 @@ class BatteryControllerCommand extends Command
         }
 
         // SOC-based constraints on price recommendation
-        if ($decision['action'] === 'charge') {
+        if ($decision['action'] === BatteryInstruction::CHARGE) {
             if ($currentSOC >= 95) {
-                $decision['action'] = 'idle';
+                $decision['action'] = BatteryInstruction::IDLE;
                 $decision['power'] = 0;
                 $decision['reason'] = 'Price suggests charging but SOC too high (≥95%)';
                 $decision['confidence'] = 'high';
@@ -388,9 +389,9 @@ class BatteryControllerCommand extends Command
             }
         }
 
-        if ($decision['action'] === 'discharge') {
+        if ($decision['action'] === BatteryInstruction::DISCHARGE) {
             if ($currentSOC <= 20) {
-                $decision['action'] = 'idle';
+                $decision['action'] = BatteryInstruction::IDLE;
                 $decision['power'] = 0;
                 $decision['reason'] = sprintf('Price suggests discharging but SOC too low (%.1f%% ≤ 20%%)', $currentSOC);
                 $decision['confidence'] = 'high';
@@ -402,12 +403,12 @@ class BatteryControllerCommand extends Command
         }
 
         // If price recommendation is idle, check for load balancing needs
-        if ($decision['action'] === 'idle') {
+        if ($decision['action'] === BatteryInstruction::IDLE) {
             // High excess solar - absorb with charging
             if ($netLoad < -2.0 && $currentSOC < 85) {
                 $maxChargePower = (float) $this->option('charge-power');
                 $decision = [
-                    'action' => 'charge',
+                    'action' => BatteryInstruction::CHARGE,
                     'power' => min($maxChargePower, abs($netLoad)),
                     'duration' => 15,
                     'reason' => sprintf('Absorbing excess solar (%.1fkW), price neutral', abs($netLoad)),
@@ -419,7 +420,7 @@ class BatteryControllerCommand extends Command
             if ($netLoad > 2.0 && $currentSOC > 25) {
                 $maxDischargePower = (float) $this->option('charge-power'); // Use same limit
                 $decision = [
-                    'action' => 'discharge',
+                    'action' => BatteryInstruction::DISCHARGE,
                     'power' => min($maxDischargePower, $netLoad),
                     'duration' => 15,
                     'reason' => sprintf('Supporting high load (%.1fkW), price neutral', $netLoad),
@@ -448,8 +449,8 @@ class BatteryControllerCommand extends Command
     {
         $finalDecision = $plannerDecision;
 
-        if ($finalDecision['action'] === 'discharge' && $systemState['current_soc'] <= 10) {
-            $finalDecision['action'] = 'idle';
+        if ($finalDecision['action'] === BatteryInstruction::DISCHARGE && $systemState['current_soc'] <= 10) {
+            $finalDecision['action'] = BatteryInstruction::IDLE;
             $finalDecision['power'] = 0;
             $finalDecision['reason'] = 'Controller override: SOC too low for discharging';
             $finalDecision['confidence'] = 'high';
@@ -463,11 +464,11 @@ class BatteryControllerCommand extends Command
      */
     private function displayFinalDecision(array $decision): void
     {
-        $action = strtoupper($decision['action']);
+        $action = strtoupper($decision['action']->value);
         $actionColor = match($decision['action']) {
-            'charge' => 'green',
-            'discharge' => 'red',
-            'idle' => 'gray',
+            BatteryInstruction::CHARGE => 'green',
+            BatteryInstruction::DISCHARGE => 'red',
+            BatteryInstruction::IDLE => 'gray',
             default => 'yellow'
         };
 
@@ -558,7 +559,7 @@ class BatteryControllerCommand extends Command
     {
         // Get recent charge intervals to calculate weighted average cost
         $recentChargeIntervals = BatteryHistory::forSystem($systemId)
-            ->where('action', 'charge')
+            ->where('action', BatteryInstruction::CHARGE)
             ->where('interval_start', '>=', now()->subDays(7)) // Last 7 days
             ->orderBy('interval_start', 'desc')
             ->get();
@@ -637,11 +638,11 @@ class BatteryControllerCommand extends Command
      */
     private function displayPlannerDecision(array $decision): void
     {
-        $action = strtoupper($decision['action']);
+        $action = strtoupper($decision['action']->value);
         $actionColor = match($decision['action']) {
-            'charge' => 'green',
-            'discharge' => 'red',
-            'idle' => 'gray',
+            BatteryInstruction::CHARGE => 'green',
+            BatteryInstruction::DISCHARGE => 'red',
+            BatteryInstruction::IDLE => 'gray',
             default => 'yellow'
         };
 
@@ -666,7 +667,7 @@ class BatteryControllerCommand extends Command
         if ($record) {
             $this->line("   📝 History ID: {$record->id}");
             $this->line("   ⏰ Interval: " . $record->interval_start->format('H:i'));
-            $this->line("   🎯 Action: " . strtoupper($record->action));
+            $this->line("   🎯 Action: " . strtoupper($record->action->value));
             $this->line("   💰 Price: " . number_format($record->price_sek_kwh, 3) . " SEK/kWh ({$record->price_tier} tier)");
 
             if ($record->cost_of_current_charge_sek) {
