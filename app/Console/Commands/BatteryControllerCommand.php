@@ -277,10 +277,9 @@ class BatteryControllerCommand extends Command
                     $apiResponse['power'] = $power; // Add power to response
                     break;
 
-                case BatteryInstruction::DISCHARGE->value:
-                    $apiResponse = $this->sigenApi->forceDischargeBatteryMqtt($systemId, time(), $power, 15);
+                case BatteryInstruction::SELF_CONSUME->value:
+                    $apiResponse = $this->sigenApi->setSelfConsumptionMqtt($systemId, time(), 15);
                     $result = $apiResponse['success'] ?? false;
-                    $apiResponse['power'] = $power; // Add power to response
                     break;
 
                 case BatteryInstruction::IDLE->value:
@@ -389,7 +388,7 @@ class BatteryControllerCommand extends Command
             }
         }
 
-        if ($decision['action'] === BatteryInstruction::DISCHARGE) {
+        if ($decision['action'] === BatteryInstruction::SELF_CONSUME) {
             if ($currentSOC <= 20) {
                 $decision['action'] = BatteryInstruction::IDLE;
                 $decision['power'] = 0;
@@ -420,7 +419,7 @@ class BatteryControllerCommand extends Command
             if ($netLoad > 2.0 && $currentSOC > 25) {
                 $maxDischargePower = (float) $this->option('charge-power'); // Use same limit
                 $decision = [
-                    'action' => BatteryInstruction::DISCHARGE,
+                    'action' => BatteryInstruction::SELF_CONSUME,
                     'power' => min($maxDischargePower, $netLoad),
                     'duration' => 15,
                     'reason' => sprintf('Supporting high load (%.1fkW), price neutral', $netLoad),
@@ -449,7 +448,7 @@ class BatteryControllerCommand extends Command
     {
         $finalDecision = $plannerDecision;
 
-        if ($finalDecision['action'] === BatteryInstruction::DISCHARGE && $systemState['current_soc'] <= 10) {
+        if ($finalDecision['action'] === BatteryInstruction::SELF_CONSUME && $systemState['current_soc'] <= 10) {
             $finalDecision['action'] = BatteryInstruction::IDLE;
             $finalDecision['power'] = 0;
             $finalDecision['reason'] = 'Controller override: SOC too low for discharging';
@@ -467,7 +466,7 @@ class BatteryControllerCommand extends Command
         $action = strtoupper($decision['action']->value);
         $actionColor = match($decision['action']) {
             BatteryInstruction::CHARGE => 'green',
-            BatteryInstruction::DISCHARGE => 'red',
+            BatteryInstruction::SELF_CONSUME => 'red',
             BatteryInstruction::IDLE => 'gray',
             default => 'yellow'
         };
@@ -641,7 +640,7 @@ class BatteryControllerCommand extends Command
         $action = strtoupper($decision['action']->value);
         $actionColor = match($decision['action']) {
             BatteryInstruction::CHARGE => 'green',
-            BatteryInstruction::DISCHARGE => 'red',
+            BatteryInstruction::SELF_CONSUME => 'red',
             BatteryInstruction::IDLE => 'gray',
             default => 'yellow'
         };

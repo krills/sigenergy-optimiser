@@ -741,10 +741,10 @@ class AdminDashboardController extends Controller
                 }
 
                 // Add charging/discharging data point for all decisions (even if power = 0)
-                if (in_array($record->action, [BatteryInstruction::CHARGE, BatteryInstruction::DISCHARGE])) {
+                if (in_array($record->action, [BatteryInstruction::CHARGE, BatteryInstruction::DISCHARGE, BatteryInstruction::SELF_CONSUME])) {
                     $chargeHistory[] = [
                         'timestamp' => $timestamp,
-                        'power' => $record->action === BatteryInstruction::DISCHARGE ? -(float) $record->power_kw : (float) $record->power_kw, // Negative for discharge
+                        'power' => in_array($record->action, [BatteryInstruction::DISCHARGE, BatteryInstruction::SELF_CONSUME]) ? -(float) $record->power_kw : (float) $record->power_kw, // Negative for discharge/self-consume
                         'price' => (float) $record->price_sek_kwh,
                         'action' => $record->action->value,
                         'decision_source' => $record->decision_source,

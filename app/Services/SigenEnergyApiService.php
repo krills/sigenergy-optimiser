@@ -1060,4 +1060,21 @@ var_dump('aioData',$aioData);
         return $this->sendBatteryCommandMqtt($systemId, BatteryInstruction::IDLE, $startTime, $params);
     }
 
+    /**
+     * Set battery to self-consumption mode via MQTT
+     * 
+     * This mode ensures battery only discharges to home consumption, never to grid.
+     * Logic: PV → Home Load → Battery Storage → Grid Export (priority order)
+     *        Battery Discharge → Home Load (when solar insufficient)
+     */
+    public function setSelfConsumptionMqtt(string $systemId, int $startTime, ?int $durationMinutes = null): array
+    {
+        $params = [];
+        if ($durationMinutes !== null) {
+            $params['duration'] = $durationMinutes;
+        }
+
+        return $this->sendBatteryCommandMqtt($systemId, BatteryInstruction::SELF_CONSUME, $startTime, $params);
+    }
+
 }

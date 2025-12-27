@@ -210,7 +210,8 @@ class ShowBatterySchedule extends Command
     {
         return match ($action) {
             BatteryInstruction::CHARGE => '<fg=blue;options=bold>🔋 CHARGE</>',
-            BatteryInstruction::DISCHARGE => '<fg=magenta;options=bold>⚡ DISCHARGE</>',
+            BatteryInstruction::DISCHARGE => '<fg=magenta;options=bold>⚡ DISCHARGE</>', // Deprecated
+            BatteryInstruction::SELF_CONSUME => '<fg=magenta;options=bold>🏠 SELF-CONSUME</>',
             BatteryInstruction::IDLE => '<fg=gray>😴 IDLE</>',
             default => $action->value,
         };

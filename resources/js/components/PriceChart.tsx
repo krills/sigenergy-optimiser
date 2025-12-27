@@ -339,10 +339,10 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
         },
         zIndex: 0
       }] : []),
-      ...((batteryHistory?.charge_history?.filter(h => h.action === BatteryInstruction.DISCHARGE)?.length ?? 0) > 0 ? [{
+      ...((batteryHistory?.charge_history?.filter(h => h.action === BatteryInstruction.DISCHARGE || h.action === BatteryInstruction.SELF_CONSUME)?.length ?? 0) > 0 ? [{
         type: 'column' as const,
         name: 'Discharging',
-        data: batteryHistory!.charge_history.filter(h => h.action === BatteryInstruction.DISCHARGE).map(charge => [
+        data: batteryHistory!.charge_history.filter(h => h.action === BatteryInstruction.DISCHARGE || h.action === BatteryInstruction.SELF_CONSUME).map(charge => [
           charge.timestamp,
           0.5
         ]),

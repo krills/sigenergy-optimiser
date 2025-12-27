@@ -82,7 +82,7 @@ class BatteryPlanner
             $earnings = $dischargeWindow['earnings'] ?? 0;
 
             $decision = [
-                'action' => BatteryInstruction::DISCHARGE,
+                'action' => BatteryInstruction::SELF_CONSUME,
                 'reason' => sprintf("Discharge window: %.3f SEK/kWh (expensive tier, %.3f SEK premium)",
                                   $currentPrice, $earnings),
             ];
@@ -179,7 +179,7 @@ class BatteryPlanner
                     'end_time' => $timestamp->copy()->addMinutes(15),
                     'earnings' => $price - $middleThird, // How much more expensive than middle tier
                     'tier' => 'expensive',
-                    'priority' => $this->calculatePriority($price, $stats, BatteryInstruction::DISCHARGE->value)
+                    'priority' => $this->calculatePriority($price, $stats, BatteryInstruction::SELF_CONSUME->value)
                 ];
             }
         }
@@ -260,7 +260,7 @@ class BatteryPlanner
         }
 
         if ($inDischargeWindow) {
-            return BatteryInstruction::DISCHARGE;
+            return BatteryInstruction::SELF_CONSUME;
         }
 
         // Not in any specific window - default to idle
@@ -305,7 +305,7 @@ class BatteryPlanner
                     }
                 }
                 return sprintf('Emergency charge: %.3f SEK/kWh', $price);
-            case BatteryInstruction::DISCHARGE:
+            case BatteryInstruction::SELF_CONSUME:
                 if ($dischargeWindow) {
                     $earnings = $dischargeWindow['earnings'];
                     return sprintf('Discharging: %.3f SEK/kWh (expensive tier, %.3f SEK premium)',
