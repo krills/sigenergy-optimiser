@@ -57,7 +57,7 @@ class BatteryControllerCommand extends Command
         try {
             // Parse simulation time if provided (ensure same timezone as price data)
             $currentTime = $simulationTime ? Carbon::parse($simulationTime)->setTimezone('Europe/Stockholm') : now();
-            
+
             // 1. Validate timing (should run at start of 15-minute intervals)
             if (!$this->isValidExecutionTime($currentTime) && !$this->option('force') && !$simulationTime) {
                 $this->warn('⚠️  Controller should run at start of 15-minute intervals (00, 15, 30, 45 minutes)');
@@ -271,24 +271,24 @@ class BatteryControllerCommand extends Command
             $apiResponse = null;
 
             switch ($action) {
-                case BatteryInstruction::CHARGE->value:
+                case BatteryInstruction::CHARGE:
                     $apiResponse = $this->sigenApi->forceChargeBatteryMqtt($systemId, time() + 60, $power, 15);
                     $result = $apiResponse['success'] ?? false;
                     $apiResponse['power'] = $power; // Add power to response
                     break;
 
-                case BatteryInstruction::SELF_CONSUME->value:
+                case BatteryInstruction::SELF_CONSUME:
                     $apiResponse = $this->sigenApi->setSelfConsumptionMqtt($systemId, time(), 15);
                     $result = $apiResponse['success'] ?? false;
                     break;
 
-                case BatteryInstruction::IDLE->value:
+                case BatteryInstruction::IDLE:
                     $apiResponse = $this->sigenApi->setBatteryIdleMqtt($systemId, time(), 15);
                     $result = $apiResponse['success'] ?? false;
                     break;
 
                 default:
-                    throw new \Exception("Unknown battery action: {$action}");
+                    throw new \Exception("Unknown battery action: " . ($action instanceof BatteryInstruction ? $action->value : $action));
             }
 
             $executionTime = round((microtime(true) - $startTime) * 1000, 2); // milliseconds
@@ -432,7 +432,10 @@ class BatteryControllerCommand extends Command
     }
 
     /**
-     * Calculate optimal charging power targeting configured grid consumption
+     * Calculate optimal charging power targeting configured grid consumption.
+     * As electric prices include a "peak consumption" element, where you incur a penalty for not spreading consumption over time,
+     * we want to keep a "smooth" curve and try not to shock the system with additional charge power load in case we're already drawing
+     * a lot from grid.
      */
     private function calculateOptimalChargePower(float $currentGridConsumption): float
     {
@@ -662,7 +665,7 @@ class BatteryControllerCommand extends Command
     {
         $this->newLine();
         $this->info('📋 Cycle Summary');
-        
+
         if ($record) {
             $this->line("   📝 History ID: {$record->id}");
             $this->line("   ⏰ Interval: " . $record->interval_start->format('H:i'));

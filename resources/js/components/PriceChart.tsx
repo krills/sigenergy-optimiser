@@ -199,7 +199,14 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
         const timeDiff = Math.abs(currentTime - pointTime);
         const isCurrentTime = timeDiff < (15 * 60 * 1000); // Within 15 minutes = current interval
 
-        let tooltip = `<b>${Highcharts.dateFormat('%H:%M', pointTime)}</b>`;
+        // Convert to Stockholm timezone for consistent display
+        const stockholmTime = new Date(pointTime).toLocaleString('sv-SE', {
+          timeZone: 'Europe/Stockholm',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false
+        });
+        let tooltip = `<b>${stockholmTime}</b>`;
         if (isCurrentTime) {
           tooltip += ` <span style="color: #dc2626; font-weight: bold;">⏰ NOW</span>`;
         }
