@@ -84,7 +84,7 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
       type: 'line',
       height: 300,
       backgroundColor: 'transparent',
-      spacing: [10, 10, 15, 10]
+      spacing: [15, 15, 20, 15] // Increased spacing for mobile
     },
 
     time: {
@@ -323,7 +323,7 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
         ]),
         color: 'rgba(33,197,94,0.4)',
         yAxis: 2,
-        pointWidth: 10,
+        pointWidth: window.innerWidth < 480 ? 6 : 10,
         pointPlacement: 0,
         tooltip: {
           format: '<b>Planned Charging</b>'
@@ -339,7 +339,7 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
         ]),
         color: 'rgb(22,140,66)',
         yAxis: 2,
-        pointWidth: 10,
+        pointWidth: window.innerWidth < 480 ? 6 : 10,
         pointPlacement: 0,
         tooltip: {
           format: '<b>Charged</b>'
@@ -355,7 +355,7 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
         ]),
         color: 'rgb(245, 158, 11)',
         yAxis: 2,
-        pointWidth: 10,
+        pointWidth: window.innerWidth < 480 ? 6 : 10,
         pointPlacement: 0,
         tooltip: {
           format: '<b>Discharged</b>'
@@ -369,28 +369,117 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
     },
 
     responsive: {
-      rules: [{
-        condition: {
-          maxWidth: 768
+      rules: [
+        {
+          // Mobile phones (390px width)
+          condition: {
+            maxWidth: 480
+          },
+          chartOptions: {
+            chart: {
+              height: 220,
+              spacing: [10, 5, 15, 5] // Tighter spacing on very small screens
+            },
+            title: {
+              style: { fontSize: '14px' }
+            },
+            subtitle: {
+              style: { fontSize: '10px' }
+            },
+            xAxis: {
+              labels: {
+                style: { fontSize: '9px' }
+              },
+              title: {
+                style: { fontSize: '10px' }
+              }
+            },
+            yAxis: [
+              {
+                labels: {
+                  enabled: false
+                },
+                title: {
+                  text: ''
+                }
+              },
+              {
+                labels: {
+                  enabled: false
+                },
+                title: {
+                  text: ''
+                }
+              },
+              {
+                // Third y-axis for battery actions (hidden)
+                visible: false,
+                min: 0,
+                max: 1,
+                gridLineWidth: 0
+              }
+            ],
+            legend: {
+              itemStyle: {
+                fontSize: '10px'
+              }
+            }
+          }
         },
-        chartOptions: {
-          chart: {
-            height: 250
+        {
+          // Tablets and small desktop
+          condition: {
+            maxWidth: 768
           },
-          title: {
-            style: { fontSize: '14px' }
-          },
-          subtitle: {
-            style: { fontSize: '11px' }
+          chartOptions: {
+            chart: {
+              height: 280
+            },
+            title: {
+              style: { fontSize: '15px' }
+            },
+            subtitle: {
+              style: { fontSize: '11px' }
+            },
+            xAxis: {
+              labels: {
+                style: { fontSize: '10px' }
+              }
+            },
+            yAxis: [
+              {
+                labels: {
+                  enabled: false
+                },
+                title: {
+                  text: ''
+                }
+              },
+              {
+                labels: {
+                  enabled: false
+                },
+                title: {
+                  text: ''
+                }
+              },
+              {
+                // Third y-axis for battery actions (hidden)
+                visible: false,
+                min: 0,
+                max: 1,
+                gridLineWidth: 0
+              }
+            ]
           }
         }
-      }]
+      ]
     }
   };
 
   if (loading) {
     return (
-      <div className="bg-white rounded-lg border border-gray-200 p-6">
+      <div className="bg-white rounded-lg border border-gray-200 p-3 sm:p-6">
         <div className="animate-pulse">
           <div className="h-4 bg-gray-200 rounded w-1/3 mb-2"></div>
           <div className="h-3 bg-gray-200 rounded w-1/4 mb-4"></div>
@@ -418,7 +507,7 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
 
   if (prices.length === 0) {
     return (
-      <div className="bg-white rounded-lg border border-gray-200 p-6">
+      <div className="bg-white rounded-lg border border-gray-200 p-3 sm:p-6">
         <div className="text-center text-gray-500">
           <h3 className="font-medium text-gray-900 mb-2">No Price Data Available</h3>
           <p className="text-sm">Waiting for Nord Pool electricity price data...</p>
@@ -428,7 +517,7 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
   }
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+    <div className="bg-white rounded-lg border border-gray-200 p-3 sm:p-6 shadow-sm">
       <HighchartsReact
         ref={chartRef}
         highcharts={Highcharts}
