@@ -7,9 +7,6 @@ use Illuminate\Support\Facades\Log;
 
 class BatteryPlanner
 {
-    // Configuration constants (for price analysis only)
-    private const float MAX_CHARGING_POWER = 3.0; // kW (for price recommendations)
-    private const float MAX_DISCHARGE_POWER = 3.0; // kW (for price recommendations)
 
     // 15-minute interval constants
     private const int INTERVAL_DURATION = 15; // minutes
@@ -43,64 +40,56 @@ class BatteryPlanner
      * Make immediate price-based decision for current 15-minute interval
      * Returns pure price analysis without operational constraints
      */
-    public function makeImmediateDecision(array $intervalPrices, ?int $currentInterval = null): array {
+    public function makeImmediateDecision(array $intervalPrices, ?int $currentInterval = null, ?Carbon $currentTime = null): array {
         // If no interval specified, calculate from current time
         if ($currentInterval === null) {
-            $currentInterval = $this->timeToInterval(now());
+            $currentTime = $currentTime ?? now();
+            $currentInterval = $this->timeToInterval($currentTime);
         }
-        
+
         // Ensure interval is valid
         if ($currentInterval < 0 || $currentInterval >= count($intervalPrices)) {
             $currentInterval = 0; // Default to first interval if calculation fails
         }
-        
+
         $currentPrice = $intervalPrices[$currentInterval]['value'] ?? 0.50;
 
         // Use the same price analysis as generateSchedule
         $priceAnalysis = $this->analyzePricePatterns($intervalPrices);
-        
+
         // Check if current interval is in charge or discharge windows (same logic as determineIntervalAction)
         $chargeWindows = $priceAnalysis['charge_windows'];
         $dischargeWindows = $priceAnalysis['discharge_windows'];
-        
+
         $inChargeWindow = collect($chargeWindows)->contains('interval', $currentInterval);
         $inDischargeWindow = collect($dischargeWindows)->contains('interval', $currentInterval);
-        
+
         if ($inChargeWindow) {
             // Find the specific charge window for details
             $chargeWindow = collect($chargeWindows)->firstWhere('interval', $currentInterval);
             $tier = $chargeWindow['tier'] ?? 'unknown';
             $savings = $chargeWindow['savings'] ?? 0;
-            
+
             $decision = [
                 'action' => 'charge',
-                'power' => self::MAX_CHARGING_POWER,
-                'duration' => 15,
                 'reason' => sprintf("Charge window: %.3f SEK/kWh (%s tier, %.3f SEK savings)",
                                   $currentPrice, $tier, $savings),
-                'confidence' => 'high'
             ];
         } elseif ($inDischargeWindow) {
             // Find the specific discharge window for details
             $dischargeWindow = collect($dischargeWindows)->firstWhere('interval', $currentInterval);
             $earnings = $dischargeWindow['earnings'] ?? 0;
-            
+
             $decision = [
                 'action' => 'discharge',
-                'power' => self::MAX_DISCHARGE_POWER,
-                'duration' => 15,
                 'reason' => sprintf("Discharge window: %.3f SEK/kWh (expensive tier, %.3f SEK premium)",
                                   $currentPrice, $earnings),
-                'confidence' => 'high'
             ];
         } else {
             // Not in any specific window - idle
             $decision = [
                 'action' => 'idle',
-                'power' => 0,
-                'duration' => 15,
                 'reason' => sprintf("Idle: %.3f SEK/kWh (neutral tier)", $currentPrice),
-                'confidence' => 'medium'
             ];
         }
 
@@ -244,7 +233,6 @@ class BatteryPlanner
                 'start_time' => $timestamp,
                 'end_time' => $timestamp->copy()->addMinutes(15),
                 'price' => $price,
-                'power' => $this->calculateIntervalPower($action),
                 'reason' => $this->getActionReason($action, $price, $priceAnalysis, $i)
             ];
 
@@ -262,39 +250,21 @@ class BatteryPlanner
         // Check if this interval is in charge or discharge windows (same logic as the new method)
         $chargeWindows = $priceAnalysis['charge_windows'];
         $dischargeWindows = $priceAnalysis['discharge_windows'];
-        
+
         $inChargeWindow = collect($chargeWindows)->contains('interval', $intervalIndex);
         $inDischargeWindow = collect($dischargeWindows)->contains('interval', $intervalIndex);
-        
+
         if ($inChargeWindow) {
             return 'charge';
         }
-        
+
         if ($inDischargeWindow) {
             return 'discharge';
         }
-        
+
         // Not in any specific window - default to idle
         return 'idle';
     }
-
-    /**
-     * Calculate power for a given action in 15-minute interval
-     */
-    private function calculateIntervalPower(string $action): float
-    {
-        switch ($action) {
-            case 'charge':
-                return self::MAX_CHARGING_POWER;
-            case 'discharge':
-                return self::MAX_DISCHARGE_POWER;
-            case 'idle':
-            default:
-                return 0.0;
-        }
-    }
-
-
 
     /**
      * Get human-readable reason for action
@@ -369,126 +339,16 @@ class BatteryPlanner
      */
     private function timeToInterval(Carbon $time): int
     {
-        $startOfDay = $time->copy()->startOfDay();
-        $minutesSinceStart = $time->diffInMinutes($startOfDay);
+        // Ensure both times are in the same timezone to avoid negative calculations
+        $timeInCorrectTz = $time->copy();
+        $startOfDay = $timeInCorrectTz->copy()->startOfDay();
+        
+        // Calculate minutes since start of day in local time
+        $minutesSinceStart = $startOfDay->diffInMinutes($timeInCorrectTz);
+        
         return intval($minutesSinceStart / self::INTERVAL_DURATION);
     }
 
-
-    /**
-     * Calculate purely price-based action recommendation (fallback for edge cases)
-     */
-    private function calculatePriceBasedAction(float $currentPrice, array $priceContext): array
-    {
-        $avgPrice = $priceContext['average_price'] ?? 0.50;
-        $currentHour = $priceContext['hour'] ?? now()->hour; // Allow hour to be passed in context
-
-        // Price thresholds
-        $veryCheapThreshold = $avgPrice * 0.8;  // 80% of average
-        $expensiveThreshold = $avgPrice * 1.2;  // 120% of average
-        $middleThreshold = $avgPrice * 1.1;     // 110% of average
-
-        // Very cheap prices - always recommend charging
-        if ($currentPrice < $veryCheapThreshold) {
-            return [
-                'action' => 'charge',
-                'power' => self::MAX_CHARGING_POWER,
-                'duration' => 15,
-                'reason' => sprintf("Very cheap price: %.3f SEK/kWh (%.1f%% below average)",
-                                  $currentPrice, (($avgPrice - $currentPrice) / $avgPrice) * 100),
-                'confidence' => 'high'
-            ];
-        }
-
-        // Very expensive prices - always recommend discharging
-        if ($currentPrice > $expensiveThreshold) {
-            return [
-                'action' => 'discharge',
-                'power' => self::MAX_DISCHARGE_POWER,
-                'duration' => 15,
-                'reason' => sprintf("Very expensive price: %.3f SEK/kWh (%.1f%% above average)",
-                                  $currentPrice, (($currentPrice - $avgPrice) / $avgPrice) * 100),
-                'confidence' => 'high'
-            ];
-        }
-
-        // Expensive but not very expensive - discharge with time consideration
-        if ($currentPrice > $middleThreshold) {
-            $isEvening = $currentHour >= 20; // After 8 PM
-            if ($isEvening) {
-                return [
-                    'action' => 'discharge',
-                    'power' => self::MAX_DISCHARGE_POWER,
-                    'duration' => 15,
-                    'reason' => 'Moderately expensive price in evening period',
-                    'confidence' => 'medium'
-                ];
-            } else {
-                return [
-                    'action' => 'idle',
-                    'power' => 0,
-                    'duration' => 15,
-                    'reason' => 'Moderately expensive but conserving for evening peak',
-                    'confidence' => 'medium'
-                ];
-            }
-        }
-
-        // Normal/cheap prices - default to idle, let controller decide based on SOC/load
-        return [
-            'action' => 'idle',
-            'power' => 0,
-            'duration' => 15,
-            'reason' => sprintf("Normal price: %.3f SEK/kWh (let controller decide based on operational factors)", $currentPrice),
-            'confidence' => 'low'
-        ];
-    }
-
-
-    /**
-     * Analyze price context for immediate decisions
-     */
-    private function analyzePriceContext(float $currentPrice, array $nextIntervals, array $allPrices): array
-    {
-        $allPriceValues = array_column($allPrices, 'value');
-        $nextPriceValues = array_column($nextIntervals, 'value');
-
-        $context = [
-            'is_local_minimum' => false,
-            'is_local_maximum' => false,
-            'trend' => 'stable',
-            'volatility' => 'low',
-            'average_price' => array_sum($allPriceValues) / count($allPriceValues)
-        ];
-
-        if (count($nextPriceValues) >= 4) {
-            $avgNext4 = array_sum(array_slice($nextPriceValues, 1, 4)) / 4;
-
-            // Check if current price is significantly lower/higher than next intervals
-            $context['is_local_minimum'] = $currentPrice < $avgNext4 * 0.95;
-            $context['is_local_maximum'] = $currentPrice > $avgNext4 * 1.05;
-
-            // Trend analysis
-            if ($avgNext4 > $currentPrice * 1.1) {
-                $context['trend'] = 'increasing';
-            } elseif ($avgNext4 < $currentPrice * 0.9) {
-                $context['trend'] = 'decreasing';
-            }
-        }
-
-        // Overall volatility
-        $priceStd = $this->calculateStandardDeviation($allPriceValues);
-        $priceAvg = $context['average_price'];
-        $volatilityRatio = $priceStd / $priceAvg;
-
-        if ($volatilityRatio > 0.3) {
-            $context['volatility'] = 'high';
-        } elseif ($volatilityRatio > 0.15) {
-            $context['volatility'] = 'medium';
-        }
-
-        return $context;
-    }
 
     // Helper methods
     private function validateInputs(array $intervalPrices, float $currentSOC): void

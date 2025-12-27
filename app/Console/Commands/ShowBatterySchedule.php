@@ -60,16 +60,9 @@ class ShowBatterySchedule extends Command
             // Generate battery schedule
             $result = $this->planner->generateSchedule($prices, $soc);
 
-            // Display planner analysis (SOC-agnostic price windows)
-            $this->info("💡 Planner Analysis (Price-Based Opportunities)");
-            $this->displayPotentialWindows($result['analysis'], $startHour, $endHour, $compact);
-
             $this->newLine();
             $this->info("⚡ Actual Schedule (SOC: {$soc}%)");
             $this->displayScheduleTable($result['schedule'], $compact, $startHour, $endHour);
-
-            $this->newLine();
-            $this->displaySummary($result['summary']);
 
             return 0;
 
@@ -98,7 +91,7 @@ class ShowBatterySchedule extends Command
 
     private function displayScheduleTable(array $schedule, bool $compact, int $startHour, int $endHour): void
     {
-        $headers = ['Time', 'Price (SEK/kWh)', 'Action', 'Power (kW)', 'SOC (%)', 'Reason'];
+        $headers = ['Time', 'Price (SEK/kWh)', 'Action', 'SOC (%)', 'Reason'];
         $rows = [];
 
         foreach ($schedule as $entry) {
@@ -118,11 +111,9 @@ class ShowBatterySchedule extends Command
             $timeRange = $startTime->format('H:i') . '-' . $entry['end_time']->format('H:i');
             $price = $this->formatPrice($entry['price']);
             $action = $this->formatAction($entry['action']);
-            $power = $entry['power'] > 0 ? number_format($entry['power'], 1) : '-';
-            $soc = number_format($entry['target_soc'], 0);
             $reason = $this->truncateReason($entry['reason']);
 
-            $rows[] = [$timeRange, $price, $action, $power, $soc, $reason];
+            $rows[] = [$timeRange, $price, $action, $reason];
         }
 
         if (empty($rows)) {
@@ -198,31 +189,6 @@ class ShowBatterySchedule extends Command
         $chargeCount = count($analysis['charge_windows']);
         $dischargeCount = count($analysis['discharge_windows']);
         $this->line("<fg=gray>💡 Found {$chargeCount} potential charge windows and {$dischargeCount} potential discharge windows</>");
-    }
-
-    private function displaySummary(array $summary): void
-    {
-        $this->info('📈 Daily Summary');
-
-        $chargeInfo = $summary['charge_intervals'] . ' intervals (' .
-                     number_format($summary['charge_hours'], 1) . 'h)';
-        $dischargeInfo = $summary['discharge_intervals'] . ' intervals (' .
-                        number_format($summary['discharge_hours'], 1) . 'h)';
-        $benefit = number_format($summary['net_benefit'], 2);
-        $efficiency = number_format($summary['efficiency_utilized'] * 100, 1);
-
-        $this->line("   🔋 Charge: <fg=green>{$chargeInfo}</>");
-        $this->line("   ⚡ Discharge: <fg=yellow>{$dischargeInfo}</>");
-        $this->line("   💰 Net Benefit: " . ($summary['net_benefit'] >= 0 ? "<fg=green>+{$benefit}" : "<fg=red>{$benefit}") . " SEK</>");
-        $this->line("   📊 Efficiency: <fg=cyan>{$efficiency}%</>");
-
-        if ($summary['net_benefit'] > 0) {
-            $this->line("   <fg=green>✅ Profitable optimization! Daily benefit: {$benefit} SEK</>");
-        } elseif ($summary['net_benefit'] < 0) {
-            $this->line("   <fg=red>⚠️  Optimization cost: " . number_format(abs($summary['net_benefit']), 2) . " SEK</>");
-        } else {
-            $this->line("   <fg=gray>➡️  Neutral optimization (no financial benefit)</>");
-        }
     }
 
     private function formatPrice(float $price): string

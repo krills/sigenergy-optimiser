@@ -18,7 +18,8 @@ class BatteryControllerCommand extends Command
                             {--force : Force execution even outside normal schedule}
                             {--system-id= : Sigenergy system ID to control}
                             {--target-grid=6 : Target grid consumption during charging (kW)}
-                            {--charge-power=4 : Maximum charging power (kW)}';
+                            {--charge-power=4 : Maximum charging power (kW)}
+                            {--time= : Simulate decision for specific time (YYYY-MM-DD HH:MM format, forces dry-run)}';
 
     protected $description = 'Execute battery optimization every 15 minutes (production controller)';
 
@@ -42,15 +43,22 @@ class BatteryControllerCommand extends Command
 
     public function handle(): int
     {
-        $isDryRun = $this->option('dry-run');
+        $simulationTime = $this->option('time');
+        $isDryRun = $this->option('dry-run') || !empty($simulationTime); // Force dry-run when time is specified
         $systemId = $this->getSystemId();
 
         $this->info('🤖 Battery Controller - ' . ($isDryRun ? 'DRY RUN MODE' : 'PRODUCTION MODE'));
+        if ($simulationTime) {
+            $this->line('🕐 Simulating time: ' . $simulationTime);
+        }
         $this->line('════════════════════════════════════════════════════════════════');
 
         try {
+            // Parse simulation time if provided (ensure same timezone as price data)
+            $currentTime = $simulationTime ? Carbon::parse($simulationTime)->setTimezone('Europe/Stockholm') : now();
+            
             // 1. Validate timing (should run at start of 15-minute intervals)
-            if (!$this->isValidExecutionTime() && !$this->option('force')) {
+            if (!$this->isValidExecutionTime($currentTime) && !$this->option('force') && !$simulationTime) {
                 $this->warn('⚠️  Controller should run at start of 15-minute intervals (00, 15, 30, 45 minutes)');
                 $this->line('Use --force to override, or wait for next scheduled interval');
                 return 1;
@@ -78,7 +86,8 @@ class BatteryControllerCommand extends Command
 
             // 5. Ask BatteryPlanner for pure price-based recommendation
             $this->line('🧠 Asking BatteryPlanner for price analysis...');
-            $priceRecommendation = $this->planner->makeImmediateDecision($flooredPrices);
+            $priceRecommendation = $this->planner->makeImmediateDecision($flooredPrices, null, $currentTime);
+            $this->displayPlannerDecision($priceRecommendation);
 
             // 6. Apply operational logic (SOC, grid, load) to price recommendation
             $this->line('⚙️ Applying operational constraints...');
@@ -98,16 +107,21 @@ class BatteryControllerCommand extends Command
                 $executionResult = $this->executeCommand($systemId, $finalDecision);
             }
 
-            // 7. Log decision and results to database
-            $this->line('📝 Logging to database...');
-            $historyRecord = $this->logOptimizationCycle(
-                $systemId,
-                $finalDecision,
-                $systemState,
-                $prices,
-                $executionResult,
-                $isDryRun
-            );
+            // 7. Log decision and results to database (skip if simulation time)
+            if (!$simulationTime) {
+                $this->line('📝 Logging to database...');
+                $historyRecord = $this->logOptimizationCycle(
+                    $systemId,
+                    $finalDecision,
+                    $systemState,
+                    $prices,
+                    $executionResult,
+                    $isDryRun
+                );
+            } else {
+                $this->line('📝 Skipping database logging (simulation mode)');
+                $historyRecord = null;
+            }
 
             // 8. Display results
             $this->displayResults($historyRecord, $executionResult, $isDryRun, $systemId);
@@ -166,9 +180,10 @@ class BatteryControllerCommand extends Command
     /**
      * Check if current time is valid for 15-minute execution
      */
-    private function isValidExecutionTime(): bool
+    private function isValidExecutionTime(?Carbon $time = null): bool
     {
-        $minute = now()->minute;
+        $time = $time ?? now();
+        $minute = $time->minute;
         return in_array($minute, [0, 15, 30, 45]);
     }
 
@@ -643,18 +658,23 @@ class BatteryControllerCommand extends Command
     /**
      * Display final results
      */
-    private function displayResults(BatteryHistory $record, array $executionResult, bool $isDryRun, ?string $systemId = null): void
+    private function displayResults(?BatteryHistory $record, array $executionResult, bool $isDryRun, ?string $systemId = null): void
     {
         $this->newLine();
         $this->info('📋 Cycle Summary');
-        $this->line("   📝 History ID: {$record->id}");
-        $this->line("   ⏰ Interval: " . $record->interval_start->format('H:i'));
-        $this->line("   🎯 Action: " . strtoupper($record->action));
-        $this->line("   💰 Price: " . number_format($record->price_sek_kwh, 3) . " SEK/kWh ({$record->price_tier} tier)");
+        
+        if ($record) {
+            $this->line("   📝 History ID: {$record->id}");
+            $this->line("   ⏰ Interval: " . $record->interval_start->format('H:i'));
+            $this->line("   🎯 Action: " . strtoupper($record->action));
+            $this->line("   💰 Price: " . number_format($record->price_sek_kwh, 3) . " SEK/kWh ({$record->price_tier} tier)");
 
-        if ($record->cost_of_current_charge_sek) {
-            $this->line("   💳 Cost in battery: " . number_format($record->cost_of_current_charge_sek, 2) . " SEK");
-            $this->line("   📊 Avg charge price: " . number_format($record->avg_charge_price_sek_kwh, 3) . " SEK/kWh");
+            if ($record->cost_of_current_charge_sek) {
+                $this->line("   💳 Cost in battery: " . number_format($record->cost_of_current_charge_sek, 2) . " SEK");
+                $this->line("   📊 Avg charge price: " . number_format($record->avg_charge_price_sek_kwh, 3) . " SEK/kWh");
+            }
+        } else {
+            $this->line("   📝 No database record (simulation mode)");
         }
 
         if (!$isDryRun && isset($executionResult['success'])) {
