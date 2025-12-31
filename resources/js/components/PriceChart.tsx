@@ -323,7 +323,7 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
         ]),
         color: 'rgba(33,197,94,0.4)',
         yAxis: 2,
-        pointWidth: window.innerWidth < 480 ? 6 : 10,
+        pointWidth: 10,
         pointPlacement: 0,
         tooltip: {
           format: '<b>Planned Charging</b>'
@@ -339,7 +339,7 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
         ]),
         color: 'rgb(22,140,66)',
         yAxis: 2,
-        pointWidth: window.innerWidth < 480 ? 6 : 10,
+        pointWidth: 10,
         pointPlacement: 0,
         tooltip: {
           format: '<b>Charged</b>'
@@ -355,7 +355,7 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
         ]),
         color: 'rgb(245, 158, 11)',
         yAxis: 2,
-        pointWidth: window.innerWidth < 480 ? 6 : 10,
+        pointWidth: 10,
         pointPlacement: 0,
         tooltip: {
           format: '<b>Discharged</b>'
@@ -419,6 +419,11 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
                 gridLineWidth: 0
               }
             ],
+            plotOptions: {
+              column: {
+                pointWidth: 6 // Smaller bars for mobile
+              }
+            },
             legend: {
               itemStyle: {
                 fontSize: '10px'
@@ -470,7 +475,12 @@ export default function PriceChart({ prices, chargeIntervals = [], batteryHistor
                 max: 1,
                 gridLineWidth: 0
               }
-            ]
+            ],
+            plotOptions: {
+              column: {
+                pointWidth: 8 // Medium bars for tablet
+              }
+            }
           }
         }
       ]

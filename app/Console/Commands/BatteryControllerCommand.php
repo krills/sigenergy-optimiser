@@ -26,6 +26,7 @@ class BatteryControllerCommand extends Command
 
     // System constants
     private const float BATTERY_CAPACITY_KWH = 8.0;
+    private const float MINIMUM_REQUIRED_SOC = 10;
 
     private BatteryPlanner $planner;
     private PriceProviderInterface $priceApi;
@@ -92,10 +93,7 @@ class BatteryControllerCommand extends Command
 
             // 6. Apply operational logic (SOC, grid, load) to price recommendation
             $this->line('⚙️ Applying operational constraints...');
-            $plannerDecision = $this->applyOperationalLogic($priceRecommendation, $systemState);
-
-            // 7. Controller safety checks and final decision
-            $finalDecision = $this->applyControllerSafetyChecks($plannerDecision, $systemState);
+            $finalDecision = $this->applyOperationalLogic($priceRecommendation, $systemState);
 
             $this->displayFinalDecision($finalDecision);
 
@@ -364,7 +362,7 @@ class BatteryControllerCommand extends Command
         $decision = $priceRecommendation;
 
         // Emergency charging takes absolute priority
-        if ($currentSOC <= 10) {
+        if ($currentSOC <= self::MINIMUM_REQUIRED_SOC) {
             return [
                 'action' => BatteryInstruction::CHARGE,
                 'power' => $this->calculateOptimalChargePower($currentGridConsumption),
@@ -380,7 +378,7 @@ class BatteryControllerCommand extends Command
             if ($currentSOC >= 95) {
                 $decision['action'] = BatteryInstruction::IDLE;
                 $decision['power'] = 0;
-                $decision['reason'] = 'Price suggests charging but SOC too high (≥95%)';
+                $decision['reason'] = 'Price suggests charging but SOC is high (≥95%)';
                 $decision['confidence'] = 'high';
             } else {
                 // Adjust charging power based on grid consumption target
@@ -389,7 +387,7 @@ class BatteryControllerCommand extends Command
         }
 
         if ($decision['action'] === BatteryInstruction::SELF_CONSUME) {
-            if ($currentSOC <= 20) {
+            if ($currentSOC <= self::MINIMUM_REQUIRED_SOC) {
                 $decision['action'] = BatteryInstruction::IDLE;
                 $decision['power'] = 0;
                 $decision['reason'] = sprintf('Price suggests discharging but SOC too low (%.1f%% ≤ 20%%)', $currentSOC);
@@ -442,23 +440,6 @@ class BatteryControllerCommand extends Command
         $targetGridConsumption = (float) $this->option('target-grid');
         $maxChargePower = (float) $this->option('charge-power');
         return max(1.0, min($maxChargePower, $targetGridConsumption - $currentGridConsumption));
-    }
-
-    /**
-     * Apply controller safety checks to planner decision
-     */
-    private function applyControllerSafetyChecks(array $plannerDecision, array $systemState): array
-    {
-        $finalDecision = $plannerDecision;
-
-        if ($finalDecision['action'] === BatteryInstruction::SELF_CONSUME && $systemState['current_soc'] <= 10) {
-            $finalDecision['action'] = BatteryInstruction::IDLE;
-            $finalDecision['power'] = 0;
-            $finalDecision['reason'] = 'Controller override: SOC too low for discharging';
-            $finalDecision['confidence'] = 'high';
-        }
-
-        return $finalDecision;
     }
 
     /**

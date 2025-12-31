@@ -58,6 +58,30 @@ class BatteryHistory extends Model
     ];
 
     /**
+     * Mutator to validate action enum values when setting
+     */
+    public function setActionAttribute($value): void
+    {
+        // If it's already a BatteryInstruction enum, use it directly
+        if ($value instanceof BatteryInstruction) {
+            $this->attributes['action'] = $value->value;
+            return;
+        }
+
+        // If it's a string, validate it's a valid enum value
+        if (is_string($value)) {
+            $enum = BatteryInstruction::tryFrom($value);
+            if ($enum === null) {
+                throw new \InvalidArgumentException("Invalid action value: {$value}. Must be one of: " . implode(', ', array_column(BatteryInstruction::cases(), 'value')));
+            }
+            $this->attributes['action'] = $value;
+            return;
+        }
+
+        throw new \InvalidArgumentException("Action must be a string or BatteryInstruction enum, got: " . gettype($value));
+    }
+
+    /**
      * Scope to get history for a specific system
      */
     public function scopeForSystem($query, string $systemId)
