@@ -141,37 +141,36 @@ class SigenEnergyApiService
     }
 
     /**
-     * Get battery status
+     * Onboard systems to the platform
      */
-    public function getBatteryStatus(): ?array
+    public function makeOnboardRequest(array $systemIds): ?Response
     {
-        $response = $this->makeRequest('get', '/battery/status');
+        $token = $this->authenticate();
 
-        return $response?->successful() ? $response->json() : null;
-    }
+        if (!$token) {
+            throw new \Exception('Sigenergy authentication failed');
+        }
 
+        try {
+            $response = Http::withHeaders([
+                'Authorization' => "Bearer {$token}",
+                'Content-Type' => 'application/json; charset=UTF-8',
+                'Accept' => 'application/json, text/plain, */*',
+                'Cache-Control' => 'no-cache',
+                'Pragma' => 'no-cache',
+                'sigen-region' => 'eu'
+            ])->withBody(json_encode($systemIds), 'application/json')
+              ->post("{$this->baseUrl}/openapi/board/onboard");
 
-    /**
-     * Set solar energy mode (consume vs sell)
-     */
-    public function setSolarEnergyMode(string $mode): bool
-    {
-        // Mode: 'consume' or 'sell'
-        $response = $this->makeRequest('post', '/solar/mode', [
-            'mode' => $mode
-        ]);
+            return $response;
 
-        return $response?->successful() ?? false;
-    }
-
-    /**
-     * Get energy consumption and production data
-     */
-    public function getEnergyData(): ?array
-    {
-        $response = $this->makeRequest('get', '/energy/data');
-
-        return $response?->successful() ? $response->json() : null;
+        } catch (\Exception $e) {
+            Log::error('Sigenergy onboard request failed', [
+                'system_ids' => $systemIds,
+                'error' => $e->getMessage()
+            ]);
+            throw $e;
+        }
     }
 
     /**
@@ -180,6 +179,11 @@ class SigenEnergyApiService
      */
     public function getSystemList(?int $startTime = null, ?int $endTime = null): ?array
     {
+        $cacheKey = 'sigensystemlist';
+        if ($data = Cache::get($cacheKey)) {
+            return $data;
+        }
+
         $params = [];
         if ($startTime !== null) {
             $params['startTime'] = $startTime;
@@ -211,8 +215,10 @@ class SigenEnergyApiService
 
             // Parse the JSON string inside the data field if it's a string
             if (is_string($dataJson)) {
-                return json_decode($dataJson, true);
+                $dataJson = json_decode($dataJson, true);
             }
+
+            Cache::put($cacheKey, $dataJson, now()->addMinutes(5));
 
             return $dataJson;
         }
@@ -221,19 +227,16 @@ class SigenEnergyApiService
     }
 
     /**
-     * Get system overview (alias for getSystemList for backwards compatibility)
-     */
-    public function getSystemOverview(): ?array
-    {
-        return $this->getSystemList();
-    }
-
-    /**
      * Get device list for a specific system
      * Rate limit: Can only access one station's device list once every 5 minutes per account
      */
     public function getDeviceList(string $systemId): ?array
     {
+        $cacheKey = 'sigendevicelist' . $systemId;
+        if ($data = Cache::get($cacheKey)) {
+            return $data;
+        }
+
         $response = $this->makeRequest('get', "/openapi/system/{$systemId}/devices");
 
         if ($response?->successful()) {
@@ -276,75 +279,12 @@ class SigenEnergyApiService
                 return $decodedDevices;
             }
 
+            Cache::put($cacheKey, $decodedDevices ?? $deviceData, now()->addMinutes(5));
+
             return $deviceData;
         }
 
         return null;
-    }
-
-    /**
-     * Get specific device by system ID and serial number
-     */
-    public function getDevice(string $systemId, string $serialNumber): ?array
-    {
-        $devices = $this->getDeviceList($systemId);
-
-        if ($devices === null) {
-            return null;
-        }
-
-        foreach ($devices as $device) {
-            if ($device['serialNumber'] === $serialNumber) {
-                return $device;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Get battery devices for a system
-     */
-    public function getBatteryDevices(string $systemId): ?array
-    {
-        $devices = $this->getDeviceList($systemId);
-
-        if ($devices === null) {
-            return null;
-        }
-
-        $batteryDevices = [];
-        foreach ($devices as $device) {
-            if (isset($device['deviceType']) &&
-                (stripos($device['deviceType'], 'battery') !== false ||
-                 stripos($device['deviceType'], 'ess') !== false)) {
-                $batteryDevices[] = $device;
-            }
-        }
-
-        return $batteryDevices;
-    }
-
-    /**
-     * Get inverter devices for a system
-     */
-    public function getInverterDevices(string $systemId): ?array
-    {
-        $devices = $this->getDeviceList($systemId);
-
-        if ($devices === null) {
-            return null;
-        }
-
-        $inverterDevices = [];
-        foreach ($devices as $device) {
-            if (isset($device['deviceType']) &&
-                stripos($device['deviceType'], 'inverter') !== false) {
-                $inverterDevices[] = $device;
-            }
-        }
-
-        return $inverterDevices;
     }
 
     /**
@@ -353,6 +293,11 @@ class SigenEnergyApiService
      */
     public function getSystemRealtimeData(string $systemId): ?array
     {
+        $cacheKey = 'sigenrealtimedata' . $systemId;
+        if ($data = Cache::get($cacheKey)) {
+            return $data;
+        }
+
         $response = $this->makeRequest('get', "/openapi/systems/{$systemId}/summary");
 
         if ($response?->successful()) {
@@ -368,50 +313,13 @@ class SigenEnergyApiService
                 return null;
             }
 
-            return $data['data'] ?? null;
+            if (isset($data['data'])) {
+                Cache::put($cacheKey, $data['data'], now()->addMinutes(5));
+                return $data['data'];
+            }
         }
 
         return null;
-    }
-
-    /**
-     * Get daily power generation for system
-     */
-    public function getDailyPowerGeneration(string $systemId): ?float
-    {
-        $data = $this->getSystemRealtimeData($systemId);
-
-        return $data['dailyPowerGeneration'] ?? null;
-    }
-
-    /**
-     * Get current month power generation for system
-     */
-    public function getMonthlyPowerGeneration(string $systemId): ?float
-    {
-        $data = $this->getSystemRealtimeData($systemId);
-
-        return $data['monthlyPowerGeneration'] ?? null;
-    }
-
-    /**
-     * Get annual power generation for system
-     */
-    public function getAnnualPowerGeneration(string $systemId): ?float
-    {
-        $data = $this->getSystemRealtimeData($systemId);
-
-        return $data['annualPowerGeneration'] ?? null;
-    }
-
-    /**
-     * Get lifetime power generation for system
-     */
-    public function getLifetimePowerGeneration(string $systemId): ?float
-    {
-        $data = $this->getSystemRealtimeData($systemId);
-
-        return $data['lifetimePowerGeneration'] ?? null;
     }
 
     /**
@@ -420,6 +328,11 @@ class SigenEnergyApiService
      */
     public function getSystemEnergyFlow(string $systemId): ?array
     {
+        $cacheKey = 'sigenenergyflow';
+        if ($data = Cache::get($cacheKey)) {
+            return $data;
+        }
+
         $response = $this->makeRequest('get', "/openapi/systems/{$systemId}/energyFlow");
 
         if ($response?->successful()) {
@@ -441,267 +354,12 @@ class SigenEnergyApiService
                 $energyFlowData = json_decode($energyFlowData, true);
             }
 
+            Cache::put($cacheKey, $energyFlowData, now()->addMinutes(5));
+
             return $energyFlowData;
         }
 
         return null;
-    }
-
-    /**
-     * Get current PV power generation
-     */
-    public function getPvPower(string $systemId): ?float
-    {
-        $data = $this->getSystemEnergyFlow($systemId);
-
-        return $data['pvPower'] ?? null;
-    }
-
-    /**
-     * Get current grid power (positive = importing, negative = exporting)
-     */
-    public function getGridPower(string $systemId): ?float
-    {
-        $data = $this->getSystemEnergyFlow($systemId);
-
-        return $data['gridPower'] ?? null;
-    }
-
-    /**
-     * Get current load power consumption
-     */
-    public function getLoadPower(string $systemId): ?float
-    {
-        $data = $this->getSystemEnergyFlow($systemId);
-
-        return $data['loadPower'] ?? null;
-    }
-
-    /**
-     * Get current battery power (positive = charging, negative = discharging)
-     */
-    public function getBatteryPower(string $systemId): ?float
-    {
-        $data = $this->getSystemEnergyFlow($systemId);
-
-        return $data['batteryPower'] ?? null;
-    }
-
-    /**
-     * Get current battery state of charge (SOC) percentage
-     */
-    public function getBatterySoc(string $systemId): ?float
-    {
-        $data = $this->getSystemEnergyFlow($systemId);
-
-        return $data['batterySoc'] ?? null;
-    }
-
-    /**
-     * Check if system is currently exporting energy to grid
-     */
-    public function isExportingToGrid(string $systemId): ?bool
-    {
-        $gridPower = $this->getGridPower($systemId);
-
-        return $gridPower !== null ? $gridPower < 0 : null;
-    }
-
-    /**
-     * Check if system is currently importing energy from grid
-     */
-    public function isImportingFromGrid(string $systemId): ?bool
-    {
-        $gridPower = $this->getGridPower($systemId);
-
-        return $gridPower !== null ? $gridPower > 0 : null;
-    }
-
-    /**
-     * Check if battery is currently charging
-     */
-    public function isBatteryCharging(string $systemId): ?bool
-    {
-        $batteryPower = $this->getBatteryPower($systemId);
-
-        return $batteryPower !== null ? $batteryPower > 0 : null;
-    }
-
-    /**
-     * Check if battery is currently discharging
-     */
-    public function isBatteryDischarging(string $systemId): ?bool
-    {
-        $batteryPower = $this->getBatteryPower($systemId);
-
-        return $batteryPower !== null ? $batteryPower < 0 : null;
-    }
-
-    /**
-     * Get device real-time data for a specific device
-     * Rate limit: Can only access one device in a station once every 5 minutes per account
-     */
-    public function getDeviceRealtimeData(string $systemId, string $serialNumber): ?array
-    {
-        $response = $this->makeRequest('get', "/openapi/systems/{$systemId}/devices/{$serialNumber}/realtimeInfo");
-
-        if ($response?->successful()) {
-            $data = $response->json();
-
-            // Check for error code in response
-            if (isset($data['code']) && $data['code'] !== 0) {
-                Log::error('Sigenergy device realtime data failed', [
-                    'system_id' => $systemId,
-                    'serial_number' => $serialNumber,
-                    'code' => $data['code'],
-                    'message' => $data['msg'] ?? 'Unknown error'
-                ]);
-                return null;
-            }
-
-            return $data['data'] ?? null;
-        }
-
-        return null;
-    }
-
-    /**
-     * Get AIO (All-in-One) inverter real-time data
-     */
-    public function getAioRealtimeData(string $systemId, string $serialNumber): ?array
-    {
-        $deviceData = $this->getDeviceRealtimeData($systemId, $serialNumber);
-
-        if ($deviceData === null || $deviceData['deviceType'] !== 'AIO') {
-            return null;
-        }
-
-        return $deviceData['realTimeInfo'] ?? null;
-    }
-
-    /**
-     * Get battery real-time data from AIO device
-     */
-    public function getBatteryRealtimeFromAio(string $systemId, string $serialNumber): ?array
-    {
-        $aioData = $this->getAioRealtimeData($systemId, $serialNumber);
-var_dump('aioData',$aioData);
-        if ($aioData === null) {
-            return null;
-        }
-
-        return [
-            'batPower' => $aioData['batPower'] ?? null,
-            'batSoc' => $aioData['batSoc'] ?? null,
-            'esDischargingDay' => $aioData['esDischargingDay'] ?? null,
-            'esChargingDay' => $aioData['esChargingDay'] ?? null,
-            'esDischargingTotal' => $aioData['esDischargingTotal'] ?? null,
-        ];
-    }
-
-    /**
-     * Get system historical data for analysis and optimization
-     * Rate limit: One account can only access one station once every 5 minutes
-     */
-    public function getSystemHistoricalData(
-        string $systemId,
-        string $level,
-        ?string $date = null
-    ): ?array {
-        $params = ['level' => $level];
-        if ($date !== null) {
-            $params['date'] = $date;
-        }
-
-        $endpoint = "/openapi/systems/{$systemId}/history?" . http_build_query($params);
-        $response = $this->makeRequest('get', $endpoint);
-
-        if ($response?->successful()) {
-            $data = $response->json();
-
-            // Check for error code in response
-            if (isset($data['code']) && $data['code'] !== 0) {
-                Log::error('Sigenergy historical data failed', [
-                    'system_id' => $systemId,
-                    'level' => $level,
-                    'date' => $date,
-                    'code' => $data['code'],
-                    'message' => $data['msg'] ?? 'Unknown error'
-                ]);
-                return null;
-            }
-
-            return $data['data'] ?? null;
-        }
-
-        return null;
-    }
-
-    /**
-     * Get daily historical data for specific date
-     */
-    public function getDailyHistory(string $systemId, string $date): ?array
-    {
-        return $this->getSystemHistoricalData($systemId, 'Day', $date);
-    }
-
-
-
-    /**
-     * Get device historical data (device-specific history)
-     * Rate limit: One account can only access one device once every 5 minutes
-     */
-    public function getDeviceHistoricalData(
-        string $systemId,
-        string $serialNumber,
-        string $level,
-        ?string $date = null
-    ): ?array {
-        $params = [
-            'systemId' => $systemId,
-            'serialNumber' => $serialNumber,
-            'level' => $level
-        ];
-
-        if ($date !== null) {
-            $params['date'] = $date;
-        }
-
-        $endpoint = "/openapi/systems/{$systemId}/devices/{$serialNumber}/history?" . http_build_query($params);
-        $response = $this->makeRequest('get', $endpoint);
-
-        if ($response?->successful()) {
-            $data = $response->json();
-
-            // Check for error code in response
-            if (isset($data['code']) && $data['code'] !== 0) {
-                Log::error('Sigenergy device historical data failed', [
-                    'system_id' => $systemId,
-                    'serial_number' => $serialNumber,
-                    'level' => $level,
-                    'date' => $date,
-                    'code' => $data['code'],
-                    'message' => $data['msg'] ?? 'Unknown error'
-                ]);
-                return null;
-            }
-
-            return $data['data'] ?? null;
-        }
-
-        return null;
-    }
-
-    /**
-     * Get battery historical data for specific device
-     */
-    public function getBatteryHistoricalData(
-        string $systemId,
-        string $serialNumber,
-        string $level,
-        ?string $date = null
-    ): ?array {
-        return $this->getDeviceHistoricalData($systemId, $serialNumber, $level, $date);
     }
 
 
@@ -1028,26 +686,6 @@ var_dump('aioData',$aioData);
     }
 
     /**
-     * Force discharge battery via MQTT
-     */
-    public function forceDischargeBatteryMqtt(
-        string $systemId,
-        int $startTime,
-        ?float $dischargingPower = null,
-        ?int $durationMinutes = null
-    ): array {
-        $params = [];
-        if ($dischargingPower !== null) {
-            $params['dischargingPower'] = $dischargingPower;
-        }
-        if ($durationMinutes !== null) {
-            $params['duration'] = $durationMinutes;
-        }
-
-        return $this->sendBatteryCommandMqtt($systemId, BatteryInstruction::DISCHARGE, $startTime, $params);
-    }
-
-    /**
      * Set battery idle via MQTT
      */
     public function setBatteryIdleMqtt(string $systemId, int $startTime, ?int $durationMinutes = null): array
@@ -1062,7 +700,7 @@ var_dump('aioData',$aioData);
 
     /**
      * Set battery to self-consumption mode via MQTT
-     * 
+     *
      * This mode ensures battery only discharges to home consumption, never to grid.
      * Logic: PV → Home Load → Battery Storage → Grid Export (priority order)
      *        Battery Discharge → Home Load (when solar insufficient)
