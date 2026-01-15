@@ -31,41 +31,10 @@ class AdminDashboardController extends Controller
      */
     public function index(Request $request)
     {
-        // Cache key for session authentication status
-        $authCacheKey = 'sigenergy_dashboard_auth_' . session()->getId();
-
-        // Try to get cached auth status first
-        $authError = null;
-        $isAuthenticated = false;
-
-        // Check if we have valid authentication in session cache
-        $sessionAuth = Cache::get($authCacheKey);
-        if ($sessionAuth && $sessionAuth['expires_at'] > now()) {
-            $isAuthenticated = true;
-        } else {
-            Log::info('Attempting Sigenergy authentication for dashboard');
-            $token = $this->sigenEnergyApi->authenticate();
-
-            if ($token) {
-                $isAuthenticated = true;
-                // Cache authentication status for 24 hours (as requested)
-                Cache::put($authCacheKey, [
-                    'authenticated' => true,
-                    'expires_at' => now()->addHours(24)
-                ], now()->addHours(24));
-
-                Log::info('Sigenergy authentication successful for dashboard');
-            } else {
-                $authError = 'Failed to authenticate with Sigenergy API. Please check your credentials.';
-                Log::error('Sigenergy authentication failed for dashboard');
-            }
-        }
-
         // If not authenticated, show error state
-        if (!$isAuthenticated) {
+        if (!$this->sigenEnergyApi->authenticate()) {
             return Inertia::render('Dashboard', [
                 'authenticated' => false,
-                'authError' => $authError,
                 'systems' => [],
                 'lastUpdated' => null
             ]);
@@ -111,111 +80,67 @@ class AdminDashboardController extends Controller
      */
     private function getCachedSystemsAndDevices(): array
     {
-        $cacheKey = 'sigenergy_systems_devices_data';
-        $cacheDuration = 5; // 5 minutes as requested
-
-        // Check if we have cached data
-        $cachedData = Cache::get($cacheKey);
-        if ($cachedData) {
-            return $cachedData;
-        }
-
-        Log::info('Fetching fresh systems and devices data from Sigenergy API');
-
-        try {
-            // Get systems list
-            $systems = $this->sigenEnergyApi->getSystemList();
-
-            if ($systems === null) {
-                Log::error('Failed to fetch systems list from Sigenergy API');
-                return [
-                    'systems' => [],
-                    'lastUpdated' => now()->toISOString(),
-                    'nextUpdate' => now()->addMinutes($cacheDuration)->toISOString(),
-                    'dataAge' => 0,
-                    'error' => 'Failed to fetch systems data'
-                ];
-            }
-
-            // Enrich systems with devices data
-            $enrichedSystems = [];
-            foreach ($systems as $system) {
-                $systemId = $system['systemId'] ?? null;
-
-                if (!$systemId) {
-                    Log::warning('System missing systemId', ['system' => $system]);
-                    continue;
-                }
-
-                // Get devices for this system (with rate limiting consideration)
-                $devices = $this->sigenEnergyApi->getDeviceList($systemId);
-
-                if ($devices === null) {
-                    Log::warning('Failed to fetch devices for system', ['systemId' => $systemId]);
-                    $devices = [];
-                }
-
-                // Categorize devices
-                $deviceCategories = $this->categorizeDevices($devices);
-
-                $enrichedSystems[] = [
-                    'systemId' => $systemId,
-                    'systemName' => $system['systemName'] ?? 'Unknown System',
-                    'address' => $system['addr'] ?? null,
-                    'status' => $system['status'] ?? 'unknown',
-                    'isActive' => $system['isActivate'] ?? false,
-                    'onOffGridStatus' => $system['onOffGridStatus'] ?? 'unknown',
-                    'timeZone' => $system['timeZone'] ?? null,
-                    'pvCapacity' => $system['pvCapacity'] ?? null,
-                    'batteryCapacity' => $system['batteryCapacity'] ?? null,
-                    'gridConnectTime' => $system['gridConnectTime'] ?? null,
-                    'devices' => [
-                        'total' => count($devices),
-                        'batteries' => $deviceCategories['batteries'],
-                        'inverters' => $deviceCategories['inverters'],
-                        'gateways' => $deviceCategories['gateways'],
-                        'meters' => $deviceCategories['meters'],
-                        'other' => $deviceCategories['other']
-                    ],
-                    'rawDevices' => $devices
-                ];
-
-                // Rate limiting: Sleep briefly between device API calls
-                usleep(100000); // 100ms delay to respect rate limits
-            }
-
-            // Prepare cached data
-            $dataToCache = [
-                'systems' => $enrichedSystems,
-                'lastUpdated' => now()->toISOString(),
-                'nextUpdate' => now()->addMinutes($cacheDuration)->toISOString(),
-                'dataAge' => 0
-            ];
-
-            // Cache the data for 5 minutes
-            Cache::put($cacheKey, $dataToCache, now()->addMinutes($cacheDuration));
-
-            Log::info('Successfully cached systems and devices data', [
-                'systems_count' => count($enrichedSystems),
-                'cache_duration' => $cacheDuration . ' minutes'
-            ]);
-
-            return $dataToCache;
-
-        } catch (\Exception $e) {
-            Log::error('Error fetching systems and devices data', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
-
+        $systems = $this->sigenEnergyApi->getSystemList();
+var_dump($systems);
+        if ($systems === null) {
+            Log::error('Failed to fetch systems list from Sigenergy API');
             return [
                 'systems' => [],
                 'lastUpdated' => now()->toISOString(),
-                'nextUpdate' => now()->addMinutes($cacheDuration)->toISOString(),
+                'nextUpdate' => now()->addMinutes(5)->toISOString(),
                 'dataAge' => 0,
-                'error' => 'Exception occurred while fetching data: ' . $e->getMessage()
+                'error' => 'Failed to fetch systems data'
             ];
         }
+
+        // Enrich systems with devices data
+        $enrichedSystems = [];
+        foreach ($systems as $system) {
+            $systemId = $system['systemId'] ?? null;
+
+            if (!$systemId) {
+                Log::warning('System missing systemId', ['system' => $system]);
+                continue;
+            }
+
+            // Get devices for this system (with rate limiting consideration)
+            $devices = $this->sigenEnergyApi->getDeviceList($systemId);
+
+            if ($devices === null) {
+                Log::warning('Failed to fetch devices for system', ['systemId' => $systemId]);
+                $devices = [];
+            }
+
+            // Categorize devices
+            $deviceCategories = $this->categorizeDevices($devices);
+
+            $enrichedSystems[] = [
+                'systemId' => $systemId,
+                'systemName' => $system['systemName'] ?? 'Unknown System',
+                'address' => $system['addr'] ?? null,
+                'status' => $system['status'] ?? 'unknown',
+                'isActive' => $system['isActivate'] ?? false,
+                'onOffGridStatus' => $system['onOffGridStatus'] ?? 'unknown',
+                'timeZone' => $system['timeZone'] ?? null,
+                'pvCapacity' => $system['pvCapacity'] ?? null,
+                'batteryCapacity' => $system['batteryCapacity'] ?? null,
+                'gridConnectTime' => $system['gridConnectTime'] ?? null,
+                'devices' => [
+                    'total' => count($devices),
+                    'batteries' => $deviceCategories['batteries'],
+                    'inverters' => $deviceCategories['inverters'],
+                    'gateways' => $deviceCategories['gateways'],
+                    'meters' => $deviceCategories['meters'],
+                    'other' => $deviceCategories['other']
+                ],
+                'rawDevices' => $devices
+            ];
+
+            // Rate limiting: Sleep briefly between device API calls
+            usleep(100000); // 100ms delay to respect rate limits
+        }
+
+        return $enrichedSystems;
     }
 
     /**
@@ -360,7 +285,7 @@ class AdminDashboardController extends Controller
      */
     private function getTodaysElectricityPrices(): array
     {
-        $cacheKey = 'nordpool_prices_today_se3';
+        $cacheKey = 'dailyelectricityprice';
         $cacheDuration = 60; // 1 hour cache
 
         // Check if we have cached data
@@ -369,14 +294,14 @@ class AdminDashboardController extends Controller
             return $cachedPrices;
         }
 
-        Log::info('Fetching fresh electricity prices from elprisetjustnu.se API');
+        Log::info('Fetching fresh electricity prices from '.$this->priceApi->getProviderName());
 
         try {
             // Get today's prices (15-minute intervals)
             $prices = $this->priceApi->getDayAheadPrices();
 
             if (empty($prices)) {
-                Log::warning('No electricity prices available from elprisetjustnu.se API');
+                Log::warning('No electricity prices available from '.$this->priceApi->getProviderName());
                 return [
                     'prices' => [],
                     'loading' => false,
@@ -406,18 +331,12 @@ class AdminDashboardController extends Controller
                 'provider' => [
                     'name' => $this->priceApi->getProviderName(),
                     'description' => $this->priceApi->getProviderDescription(),
-                    'area' => config('services.elprisetjustnu.default_area', 'SE3'),
                     'granularity' => '15min'
                 ]
             ];
 
             // Cache the data for 1 hour
             Cache::put($cacheKey, $dataToCache, now()->addMinutes($cacheDuration));
-
-            Log::info('Successfully cached electricity prices', [
-                'price_count' => count($formattedPrices),
-                'cache_duration' => $cacheDuration . ' minutes'
-            ]);
 
             return $dataToCache;
 
@@ -441,8 +360,7 @@ class AdminDashboardController extends Controller
      */
     private function getBatteryOptimizationSchedule(array $pricesData): array
     {
-        $cacheKey = 'battery_optimization_schedule_' . date('Y-m-d');
-        $cacheDuration = 15; // 15 minutes cache for battery planning
+        $cacheKey = 'battery_optimization_schedule';
 
         // Check if we have cached schedule
         $cachedSchedule = Cache::get($cacheKey);
@@ -464,62 +382,22 @@ class AdminDashboardController extends Controller
         Log::info('Generating battery optimization schedule');
 
         try {
-            // Get real current SOC from Sigenergy API
-            $currentSOC = $this->getCurrentSOCFromSystems($pricesData);
-            
-            // If SOC is unknown, we cannot generate a meaningful schedule
-            if ($currentSOC === null) {
-                Log::warning('Cannot generate battery optimization schedule - SOC unknown');
-                return [
-                    'schedule' => [],
-                    'chargeIntervals' => [],
-                    'analysis' => null,
-                    'summary' => [
-                        'note' => 'Battery SOC unknown - cannot generate optimization schedule'
-                    ],
-                    'current_soc' => null,
-                    'error' => 'Battery SOC unknown'
-                ];
-            }
-
             // Convert price data to format expected by BatteryPlanner
             $intervalPrices = [];
             foreach ($pricesData['prices'] as $index => $priceData) {
                 // Floor negative prices to 0 for optimization calculations (but preserve in display)
                 $originalPrice = $priceData['price'];
                 $optimizationPrice = max(0, $originalPrice); // Ceiling to minimum 0
-                
+
                 $intervalPrices[] = [
                     'time_start' => date('c', $priceData['timestamp']),
                     'value' => $optimizationPrice,
                     'original_value' => $originalPrice // Keep original for display/logging
                 ];
             }
-            
-            // Debug logging for price validation issues
-            if (!empty($intervalPrices)) {
-                $originalPrices = array_column($intervalPrices, 'original_value');
-                $flooredPrices = array_column($intervalPrices, 'value');
-                $negativeCount = count(array_filter($originalPrices, fn($p) => $p < 0));
-                
-                Log::debug('Dashboard: Price data for BatteryPlanner', [
-                    'total_intervals' => count($intervalPrices),
-                    'negative_prices_count' => $negativeCount,
-                    'original_range' => [
-                        'min' => min($originalPrices),
-                        'max' => max($originalPrices)
-                    ],
-                    'floored_range' => [
-                        'min' => min($flooredPrices),
-                        'max' => max($flooredPrices)
-                    ],
-                    'sample_original' => array_slice($originalPrices, 0, 5),
-                    'sample_floored' => array_slice($flooredPrices, 0, 5)
-                ]);
-            }
 
             // Generate optimization schedule
-            $result = $this->batteryPlanner->generateSchedule($intervalPrices, $currentSOC);
+            $result = $this->batteryPlanner->generateSchedule($intervalPrices);
 
             // Extract ALL potential charge windows (SOC-agnostic) for the chart
             $chargeIntervals = [];
@@ -535,10 +413,10 @@ class AdminDashboardController extends Controller
                 ];
             }
 
-            // Generate summary from analysis data  
+            // Generate summary from analysis data
             $chargeWindows = $result['analysis']['charge_windows'] ?? [];
             $dischargeWindows = $result['analysis']['discharge_windows'] ?? [];
-            
+
             $summary = [
                 'total_intervals' => count($result['schedule']),
                 'charge_intervals' => count($chargeWindows),
@@ -548,7 +426,6 @@ class AdminDashboardController extends Controller
                 'discharge_hours' => count($dischargeWindows) * 0.25,
                 'cheapest_windows' => count(array_filter($chargeWindows, fn($w) => $w['tier'] === 'cheapest')),
                 'middle_windows' => count(array_filter($chargeWindows, fn($w) => $w['tier'] === 'middle')),
-                'starting_soc' => $currentSOC,
                 'note' => 'Shows ALL potential charge windows (SOC-agnostic)'
             ];
 
@@ -559,17 +436,14 @@ class AdminDashboardController extends Controller
                 'summary' => $summary,
                 'priceTiers' => $result['analysis']['price_tiers'] ?? null,
                 'generated_at' => now()->toISOString(),
-                'current_soc' => $currentSOC,
                 'error' => null
             ];
 
-            // Cache the data for 15 minutes
-            Cache::put($cacheKey, $dataToCache, now()->addMinutes($cacheDuration));
+            Cache::put($cacheKey, $dataToCache, now()->addDay());
 
             Log::info('Successfully cached battery optimization schedule', [
                 'charge_intervals' => count($chargeIntervals),
                 'total_intervals' => count($result['schedule']),
-                'cache_duration' => $cacheDuration . ' minutes'
             ]);
 
             return $dataToCache;
@@ -592,12 +466,11 @@ class AdminDashboardController extends Controller
     /**
      * Get current SOC from first available system
      */
-    private function getCurrentSOCFromSystems(array $pricesData): ?float
+    private function getCurrentSOCFromSystems(): ?float
     {
         try {
             // Get systems data
-            $systemsData = $this->getCachedSystemsAndDevices();
-            $systems = $systemsData['systems'] ?? [];
+            $systems = $this->sigenEnergyApi->getSystemList();
 
             if (empty($systems)) {
                 Log::warning('No systems available for SOC reading');
@@ -618,7 +491,7 @@ class AdminDashboardController extends Controller
 
             $currentSOC = (float) $energyFlow['batterySoc'];
             Log::info('Current SOC fetched from Sigenergy API', ['soc' => $currentSOC]);
-            
+
             return $currentSOC;
 
         } catch (\Exception $e) {

@@ -41,7 +41,6 @@ class ShowBatterySchedule extends Command
                 return 1;
             }
 
-            $soc = (float) $this->option('soc');
             $compact = $this->option('compact');
             $hoursFilter = $this->option('hours');
 
@@ -59,10 +58,9 @@ class ShowBatterySchedule extends Command
             $this->newLine();
 
             // Generate battery schedule
-            $result = $this->planner->generateSchedule($prices, $soc);
+            $result = $this->planner->generateSchedule($prices);
 
             $this->newLine();
-            $this->info("⚡ Actual Schedule (SOC: {$soc}%)");
             $this->displayScheduleTable($result['schedule'], $compact, $startHour, $endHour);
 
             return 0;

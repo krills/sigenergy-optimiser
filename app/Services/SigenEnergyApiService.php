@@ -218,7 +218,7 @@ class SigenEnergyApiService
                 $dataJson = json_decode($dataJson, true);
             }
 
-            Cache::put($cacheKey, $dataJson, now()->addMinutes(5));
+            Cache::put($cacheKey, $dataJson, now()->addYear());
 
             return $dataJson;
         }
@@ -279,7 +279,7 @@ class SigenEnergyApiService
                 return $decodedDevices;
             }
 
-            Cache::put($cacheKey, $decodedDevices ?? $deviceData, now()->addMinutes(5));
+            Cache::put($cacheKey, $decodedDevices ?? $deviceData, now()->addYear());
 
             return $deviceData;
         }

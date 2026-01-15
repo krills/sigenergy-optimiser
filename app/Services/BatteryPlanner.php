@@ -18,16 +18,16 @@ class BatteryPlanner
     /**
      * Generate a complete charge/discharge schedule for 15-minute intervals
      */
-    public function generateSchedule(array $intervalPrices, float $currentSOC, ?Carbon $startTime = null): array
+    public function generateSchedule(array $intervalPrices, ?Carbon $startTime = null): array
     {
         $startTime = $startTime ?? now();
 
-        $this->validateInputs($intervalPrices, $currentSOC);
+        $this->validateInputs($intervalPrices);
 
         $priceAnalysis = $this->analyzePricePatterns($intervalPrices);
 
         // Generate price-based schedule for each 15-minute interval
-        $schedule = $this->createOptimal15MinuteSchedule($intervalPrices, $currentSOC, $priceAnalysis, $startTime);
+        $schedule = $this->createOptimal15MinuteSchedule($intervalPrices, $priceAnalysis);
 
         return [
             'schedule' => $schedule,
@@ -211,9 +211,7 @@ class BatteryPlanner
      */
     private function createOptimal15MinuteSchedule(
         array $intervalPrices,
-        float $currentSOC,
         array $priceAnalysis,
-        Carbon $startTime
     ): array {
         $schedule = [];
 
@@ -226,7 +224,7 @@ class BatteryPlanner
             $timestamp = Carbon::parse($interval['time_start']);
 
             // Determine action based on pure price analysis
-            $action = $this->determineIntervalAction($price, $currentSOC, $priceAnalysis, $i);
+            $action = $this->determineIntervalAction($priceAnalysis, $i);
 
             $scheduleEntry = [
                 'interval' => $i,
@@ -246,7 +244,7 @@ class BatteryPlanner
     /**
      * Determine action for a specific 15-minute interval (pure price-based, consistent with makeImmediateDecision)
      */
-    private function determineIntervalAction(float $price, float $currentSOC, array $priceAnalysis, int $intervalIndex): BatteryInstruction
+    private function determineIntervalAction(array $priceAnalysis, int $intervalIndex): BatteryInstruction
     {
         // Check if this interval is in charge or discharge windows (same logic as the new method)
         $chargeWindows = $priceAnalysis['charge_windows'];
@@ -343,23 +341,19 @@ class BatteryPlanner
         // Ensure both times are in the same timezone to avoid negative calculations
         $timeInCorrectTz = $time->copy();
         $startOfDay = $timeInCorrectTz->copy()->startOfDay();
-        
+
         // Calculate minutes since start of day in local time
         $minutesSinceStart = $startOfDay->diffInMinutes($timeInCorrectTz);
-        
+
         return intval($minutesSinceStart / self::INTERVAL_DURATION);
     }
 
 
     // Helper methods
-    private function validateInputs(array $intervalPrices, float $currentSOC): void
+    private function validateInputs(array $intervalPrices): void
     {
         if (empty($intervalPrices)) {
             throw new \InvalidArgumentException('Interval prices array cannot be empty');
-        }
-
-        if ($currentSOC < 0 || $currentSOC > 100) {
-            throw new \InvalidArgumentException('Current SOC must be between 0 and 100');
         }
 
         foreach ($intervalPrices as $index => $interval) {

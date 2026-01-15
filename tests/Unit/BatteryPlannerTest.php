@@ -16,11 +16,11 @@ class BatteryPlannerTest extends TestCase
     {
         parent::setUp();
         $this->planner = new BatteryPlanner();
-        
+
         // Real price data from elprisetjustnu.se for 2025-12-03 (Stockholm, SE3)
         // Min: 0.49535, Max: 1.2968, Avg: 0.7299 SEK/kWh, 96 intervals
         $this->samplePriceData = $this->getRealStockholmPriceData();
-        
+
         // Calculate actual average from complete dataset
         $values = array_column($this->samplePriceData, 'value');
         $this->dailyAverage = array_sum($values) / count($values);
@@ -32,20 +32,20 @@ class BatteryPlannerTest extends TestCase
         // Scenario: Medium SOC (50%) at start of day (midnight)
         $currentSOC = 50.0;
         $startTime = Carbon::create(2025, 12, 3, 0, 0, 0, 'Europe/Stockholm');
-        
-        $result = $this->planner->generateSchedule($this->samplePriceData, $currentSOC, $startTime);
-        
+
+        $result = $this->planner->generateSchedule($this->samplePriceData, $startTime);
+
         // Verify structure
         $this->assertArrayHasKey('schedule', $result);
         $this->assertArrayHasKey('analysis', $result);
         $this->assertArrayHasKey('summary', $result);
-        
+
         // Verify analysis includes price statistics
         $analysis = $result['analysis'];
         $this->assertArrayHasKey('stats', $analysis);
         $this->assertArrayHasKey('charge_windows', $analysis);
         $this->assertArrayHasKey('discharge_windows', $analysis);
-        
+
         // Verify price statistics match our real data
         $this->assertEquals(0.49535, $analysis['stats']['min'], '', 0.01);
         $this->assertEquals(1.2968, $analysis['stats']['max'], '', 0.01);
@@ -58,16 +58,16 @@ class BatteryPlannerTest extends TestCase
         // Test the core algorithm: identify 15-minute blocks cheaper than daily average
         $currentSOC = 30.0; // Low SOC to encourage charging
         $startTime = Carbon::create(2025, 12, 3, 0, 0, 0, 'Europe/Stockholm');
-        
-        $result = $this->planner->generateSchedule($this->samplePriceData, $currentSOC, $startTime);
+
+        $result = $this->planner->generateSchedule($this->samplePriceData, $startTime);
         $chargeWindows = $result['analysis']['charge_windows'];
-        
+
         // All charge windows should be below daily average
         foreach ($chargeWindows as $window) {
-            $this->assertLessThan($this->dailyAverage, $window['price'], 
+            $this->assertLessThan($this->dailyAverage, $window['price'],
                 "Charge window at interval {$window['interval']} has price {$window['price']} above daily average {$this->dailyAverage}");
         }
-        
+
         // Should identify midnight hours as cheap (00:00-04:00 range)
         $midnightWindows = array_filter($chargeWindows, function($window) {
             return $window['interval'] >= 0 && $window['interval'] <= 15; // First 4 hours (16 intervals)
@@ -81,26 +81,26 @@ class BatteryPlannerTest extends TestCase
         // Test discharge identification during peak hours
         $currentSOC = 80.0; // High SOC to allow discharging
         $startTime = Carbon::create(2025, 12, 3, 0, 0, 0, 'Europe/Stockholm');
-        
-        $result = $this->planner->generateSchedule($this->samplePriceData, $currentSOC, $startTime);
+
+        $result = $this->planner->generateSchedule($this->samplePriceData, $startTime);
         $dischargeWindows = $result['analysis']['discharge_windows'];
-        
+
         // All discharge windows should be above daily average
         foreach ($dischargeWindows as $window) {
             $this->assertGreaterThan($this->dailyAverage, $window['price'],
                 "Discharge window at interval {$window['interval']} has price {$window['price']} below daily average {$this->dailyAverage}");
         }
-        
+
         // Should identify morning peak (09:00) and evening peak (18:00-20:00)
         $morningPeakWindows = array_filter($dischargeWindows, function($window) {
             return $window['interval'] >= 36 && $window['interval'] <= 39; // 09:00-10:00 (4 intervals)
         });
-        
+
         $eveningPeakWindows = array_filter($dischargeWindows, function($window) {
             return $window['interval'] >= 72 && $window['interval'] <= 79; // 18:00-20:00 (8 intervals)
         });
-        
-        $this->assertGreaterThan(0, count($morningPeakWindows) + count($eveningPeakWindows), 
+
+        $this->assertGreaterThan(0, count($morningPeakWindows) + count($eveningPeakWindows),
             'Should find discharge windows during peak hours (morning or evening)');
     }
 
@@ -109,10 +109,10 @@ class BatteryPlannerTest extends TestCase
     {
         $currentSOC = 40.0;
         $startTime = Carbon::create(2025, 12, 3, 0, 0, 0, 'Europe/Stockholm');
-        
-        $result = $this->planner->generateSchedule($this->samplePriceData, $currentSOC, $startTime);
+
+        $result = $this->planner->generateSchedule($this->samplePriceData, $startTime);
         $schedule = $result['schedule'];
-        
+
         // Verify all schedule entries are 15-minute intervals
         foreach ($schedule as $entry) {
             $this->assertArrayHasKey('interval', $entry);
@@ -120,11 +120,11 @@ class BatteryPlannerTest extends TestCase
             $this->assertArrayHasKey('start_time', $entry);
             $this->assertArrayHasKey('end_time', $entry);
             $this->assertArrayHasKey('price', $entry);
-            
+
             // Verify 15-minute duration (use absolute value to handle timezone issues)
             $duration = abs($entry['end_time']->diffInMinutes($entry['start_time']));
             $this->assertEquals(15, $duration, 'Each schedule entry should be exactly 15 minutes');
-            
+
             // Verify valid actions
             $this->assertContains($entry['action'], ['charge', 'discharge', 'idle']);
         }
@@ -136,19 +136,19 @@ class BatteryPlannerTest extends TestCase
         // Test with the cheapest price in our dataset (0.49535 SEK/kWh at 00:15)
         $currentSOC = 30.0;
         $startTime = Carbon::create(2025, 12, 3, 0, 0, 0, 'Europe/Stockholm');
-        
-        $result = $this->planner->generateSchedule($this->samplePriceData, $currentSOC, $startTime);
+
+        $result = $this->planner->generateSchedule($this->samplePriceData, $startTime);
         $schedule = $result['schedule'];
-        
+
         // Should have charging actions during very cheap periods
         $chargeActions = array_filter($schedule, fn($s) => $s['action'] === 'charge');
         $this->assertGreaterThan(0, count($chargeActions), 'Should schedule charging during cheap periods');
-        
+
         // Find the cheapest charge window
         $cheapestCharge = array_reduce($chargeActions, function($min, $current) {
             return (!$min || $current['price'] < $min['price']) ? $current : $min;
         });
-        
+
         if ($cheapestCharge) {
             $this->assertLessThan(0.55, $cheapestCharge['price'], 'Cheapest charge window should be very cheap');
         }
@@ -160,19 +160,19 @@ class BatteryPlannerTest extends TestCase
         // Test with peak price in our dataset (1.2968 SEK/kWh at 09:00)
         $currentSOC = 80.0; // High SOC to allow discharging
         $startTime = Carbon::create(2025, 12, 3, 0, 0, 0, 'Europe/Stockholm');
-        
-        $result = $this->planner->generateSchedule($this->samplePriceData, $currentSOC, $startTime);
+
+        $result = $this->planner->generateSchedule($this->samplePriceData, $startTime);
         $schedule = $result['schedule'];
-        
+
         // Should have discharge actions during expensive periods
         $dischargeActions = array_filter($schedule, fn($s) => $s['action'] === 'discharge');
         $this->assertGreaterThan(0, count($dischargeActions), 'Should schedule discharging during expensive periods');
-        
+
         // Find the most expensive discharge window
         $mostExpensiveDischarge = array_reduce($dischargeActions, function($max, $current) {
             return (!$max || $current['price'] > $max['price']) ? $current : $max;
         });
-        
+
         if ($mostExpensiveDischarge) {
             $this->assertGreaterThan(1.0, $mostExpensiveDischarge['price'], 'Most expensive discharge window should be during peak prices');
         }
@@ -184,15 +184,15 @@ class BatteryPlannerTest extends TestCase
         // Test with very low SOC
         $result1 = $this->planner->generateSchedule($this->samplePriceData, 10.0, Carbon::now());
         $schedule1 = $result1['schedule'];
-        
+
         // Should prioritize charging when SOC is very low
         $chargeActions = array_filter($schedule1, fn($s) => $s['action'] === 'charge');
         $this->assertGreaterThan(0, count($chargeActions), 'Should schedule charging when SOC is low');
-        
+
         // Test with very high SOC
         $result2 = $this->planner->generateSchedule($this->samplePriceData, 95.0, Carbon::now());
         $schedule2 = $result2['schedule'];
-        
+
         // Should not schedule charging when SOC is at maximum
         $chargeActions2 = array_filter($schedule2, fn($s) => $s['action'] === 'charge');
         $this->assertEquals(0, count($chargeActions2), 'Should not schedule charging when SOC is at maximum');
@@ -203,18 +203,18 @@ class BatteryPlannerTest extends TestCase
     {
         $currentSOC = 50.0;
         $startTime = Carbon::create(2025, 12, 3, 0, 0, 0, 'Europe/Stockholm');
-        
-        $result = $this->planner->generateSchedule($this->samplePriceData, $currentSOC, $startTime);
-        
+
+        $result = $this->planner->generateSchedule($this->samplePriceData, $startTime);
+
         // Verify savings calculation for charge windows
         foreach ($result['analysis']['charge_windows'] as $window) {
             $expectedSavings = $this->dailyAverage - $window['price'];
-            $this->assertEquals($expectedSavings, $window['savings'], 
+            $this->assertEquals($expectedSavings, $window['savings'],
                 'Savings calculation should be daily average minus interval price', 0.01);
             $this->assertGreaterThan(0, $window['savings'], 'All charge windows should have positive savings');
         }
-        
-        // Verify earnings calculation for discharge windows  
+
+        // Verify earnings calculation for discharge windows
         foreach ($result['analysis']['discharge_windows'] as $window) {
             $expectedEarnings = $window['price'] - $this->dailyAverage;
             $this->assertEquals($expectedEarnings, $window['earnings'],
@@ -228,16 +228,16 @@ class BatteryPlannerTest extends TestCase
     {
         $currentSOC = 50.0;
         $startTime = Carbon::create(2025, 12, 3, 0, 0, 0, 'Europe/Stockholm');
-        
-        $result = $this->planner->generateSchedule($this->samplePriceData, $currentSOC, $startTime);
-        
+
+        $result = $this->planner->generateSchedule($this->samplePriceData, $startTime);
+
         // Charge windows should be sorted by priority (highest savings first)
         $chargeWindows = $result['analysis']['charge_windows'];
         for ($i = 0; $i < count($chargeWindows) - 1; $i++) {
             $this->assertGreaterThanOrEqual($chargeWindows[$i + 1]['savings'], $chargeWindows[$i]['savings'],
                 'Charge windows should be sorted by savings (highest priority first)');
         }
-        
+
         // Discharge windows should be sorted by priority (highest earnings first)
         $dischargeWindows = $result['analysis']['discharge_windows'];
         for ($i = 0; $i < count($dischargeWindows) - 1; $i++) {
@@ -251,10 +251,10 @@ class BatteryPlannerTest extends TestCase
     {
         $currentSOC = 50.0;
         $startTime = Carbon::create(2025, 12, 3, 0, 0, 0, 'Europe/Stockholm');
-        
-        $result = $this->planner->generateSchedule($this->samplePriceData, $currentSOC, $startTime);
+
+        $result = $this->planner->generateSchedule($this->samplePriceData, $startTime);
         $summary = $result['summary'];
-        
+
         // Verify summary structure (updated for 15-minute intervals)
         $this->assertArrayHasKey('total_intervals', $summary);
         $this->assertArrayHasKey('charge_intervals', $summary);
@@ -264,14 +264,14 @@ class BatteryPlannerTest extends TestCase
         $this->assertArrayHasKey('estimated_earnings', $summary);
         $this->assertArrayHasKey('net_benefit', $summary);
         $this->assertArrayHasKey('starting_soc', $summary);
-        
+
         // Verify calculations
         $this->assertEquals($currentSOC, $summary['starting_soc']);
         $this->assertEquals(
-            $summary['charge_intervals'] + $summary['discharge_intervals'] + $summary['idle_intervals'], 
+            $summary['charge_intervals'] + $summary['discharge_intervals'] + $summary['idle_intervals'],
             $summary['total_intervals']
         );
-        
+
         $netBenefit = $summary['estimated_savings'] + $summary['estimated_earnings'];
         $this->assertEquals($netBenefit, $summary['net_benefit'], '', 0.01);
     }
