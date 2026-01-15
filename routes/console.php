@@ -7,3 +7,6 @@ Schedule::command(BatteryControllerCommand::SIGNATURE)
     ->everyFifteenMinutes()
     ->withoutOverlapping()
     ->appendOutputTo(storage_path('logs/battery-controller.log'));
+
+Schedule::command('telescope:prune')->fridays();
+;

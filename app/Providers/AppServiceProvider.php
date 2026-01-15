@@ -15,6 +15,10 @@ class AppServiceProvider extends ServiceProvider
     {
         // Bind the price provider interface to a concrete implementation
         $this->app->bind(PriceProviderInterface::class, ElprisetjustNuApiService::class);
+        if ($this->app->environment('local') && class_exists(\Laravel\Telescope\TelescopeServiceProvider::class)) {
+            $this->app->register(\Laravel\Telescope\TelescopeServiceProvider::class);
+            $this->app->register(TelescopeServiceProvider::class);
+        }
     }
 
     /**
