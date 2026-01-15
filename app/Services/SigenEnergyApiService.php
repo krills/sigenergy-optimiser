@@ -258,9 +258,9 @@ class SigenEnergyApiService
                 $deviceData = json_decode($deviceData, true);
             }
 
+            $decodedDevices = [];
             // Device data comes as array of JSON strings - need to decode each device
             if (is_array($deviceData)) {
-                $decodedDevices = [];
                 foreach ($deviceData as $deviceJson) {
                     if (is_string($deviceJson)) {
                         $device = json_decode($deviceJson, true);
@@ -276,12 +276,11 @@ class SigenEnergyApiService
                         $decodedDevices[] = $deviceJson;
                     }
                 }
-                return $decodedDevices;
             }
 
-            Cache::put($cacheKey, $decodedDevices ?? $deviceData, now()->addYear());
+            Cache::put($cacheKey, $decodedDevices, now()->addYear());
 
-            return $deviceData;
+            return $decodedDevices;
         }
 
         return null;

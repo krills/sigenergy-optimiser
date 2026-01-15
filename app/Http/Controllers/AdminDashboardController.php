@@ -50,10 +50,10 @@ class AdminDashboardController extends Controller
         $batterySchedule = $this->getBatteryOptimizationSchedule($pricesData);
 
         // Get battery history for today's visualization
-        $batteryHistory = $this->getTodaysBatteryHistory($systemsData['systems'] ?? []);
+        $batteryHistory = $this->getTodaysBatteryHistory($systemsData);
 
         // Get current battery mode from Sigenergy API
-        $currentBatteryMode = $this->getCurrentBatteryMode($systemsData['systems'] ?? []);
+        $currentBatteryMode = $this->getCurrentBatteryMode($systemsData);
 
         // Get battery history log for debug purposes
         $batteryHistoryLog = $this->getBatteryHistoryLog();
@@ -61,12 +61,7 @@ class AdminDashboardController extends Controller
         return Inertia::render('Dashboard', [
             'authenticated' => true,
             'authError' => null,
-            'systems' => $systemsData['systems'] ?? [],
-            'lastUpdated' => $systemsData['lastUpdated'] ?? null,
-            'cacheInfo' => [
-                'nextUpdate' => $systemsData['nextUpdate'] ?? null,
-                'dataAge' => $systemsData['dataAge'] ?? null
-            ],
+            'systems' => $systemsData,
             'electricityPrices' => $pricesData,
             'batterySchedule' => $batterySchedule,
             'batteryHistory' => $batteryHistory,
@@ -81,16 +76,10 @@ class AdminDashboardController extends Controller
     private function getCachedSystemsAndDevices(): array
     {
         $systems = $this->sigenEnergyApi->getSystemList();
-var_dump($systems);
+
         if ($systems === null) {
             Log::error('Failed to fetch systems list from Sigenergy API');
-            return [
-                'systems' => [],
-                'lastUpdated' => now()->toISOString(),
-                'nextUpdate' => now()->addMinutes(5)->toISOString(),
-                'dataAge' => 0,
-                'error' => 'Failed to fetch systems data'
-            ];
+            return [];
         }
 
         // Enrich systems with devices data
@@ -460,45 +449,6 @@ var_dump($systems);
                 'analysis' => null,
                 'error' => 'Failed to generate optimization schedule: ' . $e->getMessage()
             ];
-        }
-    }
-
-    /**
-     * Get current SOC from first available system
-     */
-    private function getCurrentSOCFromSystems(): ?float
-    {
-        try {
-            // Get systems data
-            $systems = $this->sigenEnergyApi->getSystemList();
-
-            if (empty($systems)) {
-                Log::warning('No systems available for SOC reading');
-                return null;
-            }
-
-            // Use the first system
-            $system = $systems[0];
-            $systemId = $system['systemId'];
-
-            // Get energy flow data
-            $energyFlow = $this->sigenEnergyApi->getSystemEnergyFlow($systemId);
-
-            if ($energyFlow === null || !isset($energyFlow['batterySoc'])) {
-                Log::warning('Could not get SOC from Sigenergy API');
-                return null;
-            }
-
-            $currentSOC = (float) $energyFlow['batterySoc'];
-            Log::info('Current SOC fetched from Sigenergy API', ['soc' => $currentSOC]);
-
-            return $currentSOC;
-
-        } catch (\Exception $e) {
-            Log::error('Error fetching current SOC from Sigenergy API', [
-                'error' => $e->getMessage()
-            ]);
-            return null;
         }
     }
 
