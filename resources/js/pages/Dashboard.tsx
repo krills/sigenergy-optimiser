@@ -13,6 +13,7 @@ function Dashboard() {
     const { authenticated, authError, systems, lastUpdated, cacheInfo, electricityPrices, batterySchedule, batteryHistory, currentBatteryMode, batteryHistoryLog } = usePage<PageProps>().props;
     const [realtimeData, setRealtimeData] = useState<RealtimeDataState>({});
     const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+    const [autoRefreshEnabled, setAutoRefreshEnabled] = useState<boolean>(false);
 
     // Function to fetch realtime data for a system
     const fetchRealtimeData = async (systemId: string): Promise<void> => {
@@ -31,23 +32,18 @@ function Dashboard() {
         }
     };
 
-    // Auto-refresh realtime data every 30 seconds
+    // Auto-refresh realtime data when enabled
     useEffect(() => {
-        if (!authenticated || !systems?.length) return;
+        if (!authenticated || !systems?.length || !autoRefreshEnabled) return;
 
         const interval = setInterval(() => {
             systems.forEach(system => {
                 fetchRealtimeData(system.systemId);
             });
-        }, 30000);
-
-        // Initial fetch
-        systems.forEach(system => {
-            fetchRealtimeData(system.systemId);
-        });
+        }, 60*5*1000); // 5 minutes
 
         return () => clearInterval(interval);
-    }, [authenticated, systems]);
+    }, [authenticated, systems, autoRefreshEnabled]);
 
     const handleRefresh = (): void => {
         setIsRefreshing(true);
@@ -129,21 +125,41 @@ function Dashboard() {
                             <div className="flex items-center space-x-4">
                                 {lastUpdated && (
                                     <span className="text-sm text-gray-500">
-                                        Updated: {formatDateTime(lastUpdated, { 
-                                            hour: '2-digit', 
-                                            minute: '2-digit', 
+                                        Updated: {formatDateTime(lastUpdated, {
+                                            hour: '2-digit',
+                                            minute: '2-digit',
                                             second: '2-digit',
-                                            hour12: false 
+                                            hour12: false
                                         })}
                                     </span>
                                 )}
-                                <button
-                                    onClick={handleRefresh}
-                                    disabled={isRefreshing}
-                                    className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white px-4 py-2 rounded text-sm font-medium transition-colors"
-                                >
-                                    {isRefreshing ? 'Refreshing...' : 'Refresh Data'}
-                                </button>
+                                <div className="flex items-center space-x-3">
+                                    <div className="flex items-center space-x-2">
+                                        <label className="text-sm text-gray-700 font-medium">Auto Refresh</label>
+                                        <button
+                                            onClick={() => setAutoRefreshEnabled(!autoRefreshEnabled)}
+                                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                                                autoRefreshEnabled ? 'bg-blue-600' : 'bg-gray-200'
+                                            }`}
+                                        >
+                                            <span
+                                                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                                    autoRefreshEnabled ? 'translate-x-6' : 'translate-x-1'
+                                                }`}
+                                            />
+                                        </button>
+                                        {autoRefreshEnabled && (
+                                            <span className="text-xs text-green-600 font-medium">5min</span>
+                                        )}
+                                    </div>
+                                    <button
+                                        onClick={handleRefresh}
+                                        disabled={isRefreshing}
+                                        className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white px-3 py-2 rounded text-sm font-medium transition-colors"
+                                    >
+                                        {isRefreshing ? 'Refreshing...' : 'Update Now'}
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -521,12 +537,12 @@ function Dashboard() {
                                             {(batteryHistoryLog || []).map((entry: any, index: number) => (
                                                 <tr key={index} className="hover:bg-gray-50">
                                                     <td className="px-3 py-2 text-xs text-gray-900">
-                                                        {formatDateTime(entry.timestamp, { 
-                                                            month: 'short', 
-                                                            day: 'numeric', 
-                                                            hour: '2-digit', 
+                                                        {formatDateTime(entry.timestamp, {
+                                                            month: 'short',
+                                                            day: 'numeric',
+                                                            hour: '2-digit',
                                                             minute: '2-digit',
-                                                            hour12: false 
+                                                            hour12: false
                                                         })}
                                                     </td>
                                                     <td className="px-3 py-2 text-xs">
@@ -544,8 +560,8 @@ function Dashboard() {
                                                     <td className="px-3 py-2 text-xs text-gray-900">{entry.home_consumption}kW</td>
                                                     <td className="px-3 py-2 text-xs">
                                                         <span className={entry.grid_import > 0 ? 'text-red-600' : entry.grid_export > 0 ? 'text-green-600' : 'text-gray-600'}>
-                                                            {entry.grid_import > 0 ? `↑${entry.grid_import}kW` : 
-                                                             entry.grid_export > 0 ? `↓${entry.grid_export}kW` : 
+                                                            {entry.grid_import > 0 ? `↑${entry.grid_import}kW` :
+                                                             entry.grid_export > 0 ? `↓${entry.grid_export}kW` :
                                                              '0kW'}
                                                         </span>
                                                     </td>

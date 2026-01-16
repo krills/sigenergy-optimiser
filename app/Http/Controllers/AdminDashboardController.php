@@ -274,8 +274,7 @@ class AdminDashboardController extends Controller
      */
     private function getTodaysElectricityPrices(): array
     {
-        $cacheKey = 'dailyelectricityprice';
-        $cacheDuration = 60; // 1 hour cache
+        $cacheKey = 'dailyelectricityprice' . date('Ymd');
 
         // Check if we have cached data
         $cachedPrices = Cache::get($cacheKey);
@@ -324,8 +323,7 @@ class AdminDashboardController extends Controller
                 ]
             ];
 
-            // Cache the data for 1 hour
-            Cache::put($cacheKey, $dataToCache, now()->addMinutes($cacheDuration));
+            Cache::put($cacheKey, $dataToCache, now()->addDay());
 
             return $dataToCache;
 
@@ -349,7 +347,7 @@ class AdminDashboardController extends Controller
      */
     private function getBatteryOptimizationSchedule(array $pricesData): array
     {
-        $cacheKey = 'battery_optimization_schedule';
+        $cacheKey = 'battery_optimization_schedule' . date('Ymd');
 
         // Check if we have cached schedule
         $cachedSchedule = Cache::get($cacheKey);
