@@ -79,7 +79,7 @@ class BatteryControllerCommand extends Command
             }
 
             // 4. Floor negative prices for optimization (preserve originals for logging)
-            $flooredPrices = array_map(function($priceData) {
+            $flooredPrices = array_map(static function($priceData) {
                 $flooredData = $priceData;
                 $flooredData['value'] = max(0, $priceData['value']); // Floor to minimum 0
                 $flooredData['original_value'] = $priceData['value']; // Preserve original
@@ -362,7 +362,7 @@ class BatteryControllerCommand extends Command
         $decision = $priceRecommendation;
 
         // Emergency charging takes absolute priority
-        if ($currentSOC <= self::MINIMUM_REQUIRED_SOC) {
+        if ($currentSOC < self::MINIMUM_REQUIRED_SOC) {
             return [
                 'action' => BatteryInstruction::CHARGE,
                 'power' => $this->calculateOptimalChargePower($currentGridConsumption),
