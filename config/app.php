@@ -107,6 +107,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Application Password
+    |--------------------------------------------------------------------------
+    |
+    | This password is used for simple web authentication to protect the
+    | dashboard. The password should be hashed and stored in your .env file.
+    |
+    */
+
+    'password' => env('APP_PASSWORD'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Maintenance Mode Driver
     |--------------------------------------------------------------------------
     |

@@ -14,6 +14,10 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->web(append: [
             \App\Http\Middleware\HandleInertiaRequests::class,
         ]);
+        
+        $middleware->alias([
+            'password.auth' => \App\Http\Middleware\PasswordAuth::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //

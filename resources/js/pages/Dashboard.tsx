@@ -159,14 +159,21 @@ function Dashboard() {
                                     >
                                         {isRefreshing ? 'Refreshing...' : 'Update Now'}
                                     </button>
+                                    <button
+                                        onClick={() => router.post('/logout')}
+                                        className="px-3 py-2 rounded text-sm font-medium transition-colors"
+                                    >
+                                        Logout
+                                    </button>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </nav>
 
-                <main>
-                    <div className="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8">
+                <main className="relative" style={{ backgroundImage: 'url(/img/bkg.png)', backgroundSize: 'cover', backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundAttachment: 'fixed' }}>
+                    <div className="absolute inset-0 bg-gradient-to-b from-white/60 to-white/40"></div>
+                    <div className="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8 relative z-10">
                         <div className="px-4 py-6 sm:px-0">
 
                             {/* Electricity Price Chart */}
