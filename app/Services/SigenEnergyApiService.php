@@ -358,6 +358,21 @@ class SigenEnergyApiService
             return $energyFlowData;
         }
 
+        if ($response === null) {
+            Log::error('Sigenergy energy flow response is null', [
+                'system_id' => $systemId,
+                'status' => $response->status(),
+                'headers' => $response->getHeaders(),
+            ]);
+        } else {
+            Log::error('Sigenergy energy flow failed', [
+                'system_id' => $systemId,
+                'status' => $response->status(),
+                'headers' => $response->getHeaders(),
+                'response' => $response->json()
+            ]);
+        }
+
         return null;
     }
 
